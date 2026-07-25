@@ -48,10 +48,10 @@ Chosen after a fresh (July 2026) review of the Rust ecosystem.
 |-----------------|--------------------------------------------|
 | Language        | Rust                                       |
 | Menu bar / tray | `tray-icon` + `muda` (native menus)        |
-| Event loop      | `tao`/`winit` (required on main thread)    |
+| Event loop      | `tao` (required on main thread)            |
 | MPD client      | `mpd_client` (async, tokio, typed, `idle`) |
 | Async runtime   | `tokio`                                     |
-| URL scheme      | winit custom `ApplicationDelegate` (see §8) |
+| URL scheme      | `tao` custom `ApplicationDelegate` (see §8) |
 | Command parsing | `shlex` (tokenise the decoded URL command, respecting quotes) |
 | Config          | `toml` + `serde`                           |
 | Packaging       | `cargo-bundle`                             |
@@ -68,10 +68,12 @@ Chosen after a fresh (July 2026) review of the Rust ecosystem.
   support); `tray-item` is weaker for dynamic/nested menus. Known macOS tray
   quirks are cosmetic, not blockers.
 - **URL scheme** is the historically fiddly part. Because we already run a
-  `winit`/`tao` event loop on the main thread (required by `tray-icon` on
-  macOS), we handle URL-open events via winit's custom `ApplicationDelegate`
-  rather than hand-rolling raw `NSAppleEventManager` (`kAEGetURL`) plumbing. The
-  matured `objc2` ecosystem is available as a fallback if needed.
+  `tao` event loop on the main thread (required by `tray-icon` on macOS; `tao`
+  was chosen over plain `winit` as the more tray/menu-proven of the two, per
+  tray-icon/muda's own examples), we handle URL-open events via `tao`'s custom
+  `ApplicationDelegate` rather than hand-rolling raw `NSAppleEventManager`
+  (`kAEGetURL`) plumbing. The matured `objc2` ecosystem is available as a
+  fallback if needed.
 - **`mpd_client`** (async/tokio, typed responses, first-class `idle`) is the
   best MPD library for a push-based, event-driven service.
 
@@ -105,10 +107,10 @@ rust-mpd-controller/
 
 ### Concurrency model
 
-`tray-icon`/`muda` need the `winit`/`tao` event loop on the **main thread**;
+`tray-icon`/`muda` need the `tao` event loop on the **main thread**;
 `mpd_client` is async on **tokio**. Therefore:
 
-1. Main thread runs the winit event loop and owns the tray icon + menu.
+1. Main thread runs the `tao` event loop and owns the tray icon + menu.
 2. A background tokio task holds an MPD connection and loops on `idle`,
    receiving push notifications when player/playlist state changes.
 3. On each change the task fetches current song + status and sends an update to
@@ -193,7 +195,7 @@ icon).
   of MPD commands for fire-and-forget use. (Implementer's discretion; keep it
   simple.)
 - **Delivery:** macOS routes the URL to the running **MpdController.app**, which
-  handles the URL-open event (winit `ApplicationDelegate`) and dispatches within
+  handles the URL-open event (`tao` `ApplicationDelegate`) and dispatches within
   its own process/MPD connection. If the app isn't running, macOS launches it
   first.
 - **Registration:** via `CFBundleURLTypes` in the bundle `Info.plist` (§9). The
@@ -209,7 +211,7 @@ icon).
 
 ## 8. URL-event handling detail
 
-- Handled in-process via winit's custom `ApplicationDelegate`, which receives the
+- Handled in-process via `tao`'s custom `ApplicationDelegate`, which receives the
   URL when macOS opens it — the event loop we already run for the tray makes this
   the natural mechanism (no separate process, no polling).
 - **Fallback if unreliable:** drop to `objc2` and register an
@@ -282,7 +284,7 @@ Recorded only so the door isn't accidentally closed — **do not build in v1.**
 - A short README with build/install/config instructions is sufficient.
 
 ### Open questions / risks
-- **winit `ApplicationDelegate` URL handling** is the least-proven piece; if it
+- **`tao` `ApplicationDelegate` URL handling** is the least-proven piece; if it
   proves unreliable, fall back to `objc2` / `NSAppleEventManager` (§8).
 - **`tray-icon` macOS cosmetic quirks** (icon rendering, occasional double icon
   on some macOS versions) — expected minor; verify on the current OS.

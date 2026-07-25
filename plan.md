@@ -5,7 +5,7 @@ and independently-verifiable steps.
 
 ## Technical context & decisions carried into this plan
 
-- **Build order: top-down.** We get a visible tray icon + winit/tao event loop
+- **Build order: top-down.** We get a visible tray icon + `tao` event loop
   running first (Step 2), before any MPD connection exists, then layer in real
   data, then commands, then the URL scheme last (per spec §12, it's the least-
   proven piece — building it last means everything it depends on is already
@@ -20,34 +20,48 @@ and independently-verifiable steps.
 - **Module layout** follows spec §4 exactly: `main.rs`, `mpd.rs`, `command.rs`,
   `config.rs`, `menu.rs`. `command.rs` stays the single dispatch path used by
   both menu actions and the URL scheme.
-- **Concurrency model** follows spec §4: winit/tao event loop + tray on the
+- **Concurrency model** follows spec §4: `tao` event loop + tray on the
   main thread; a background tokio task owns the MPD connection and `idle`
   loop; state changes cross to the main thread via an `EventLoopProxy` custom
-  user event. Steps 2 and 4 are where the two halves of this get built and
-  then wired together.
-- Existing template scaffold (`src/mymodule.rs`, the `frobnicate`/`widgets`
-  CLI demo in `main.rs`) is placeholder and gets removed in Step 1, not
-  preserved or ported.
+  user event (Step 2 built the proxy/user-event plumbing with a `Quit` item as
+  its only consumer so far; Step 4 is where the MPD side starts feeding it).
 - Per spec's scope note, several steps rely on manual verification against a
   running MPD instance rather than automated tests — that's intentional, not
   a gap.
+
+## Decisions made while building (not yet reflected as open questions)
+
+- **`tao` chosen over `winit`** for the event loop (spec §3 originally left
+  this open) — tray-icon/muda's own examples and docs lean on `tao`, and it
+  has a smoother track record for macOS tray/menu integration. `spec.md` has
+  been updated throughout to say `tao` rather than `winit`/`tao`.
+- **Tray title is text-only, no icon image.** `TrayIconBuilder::with_title`
+  puts text straight in the macOS menu bar (matching spec §6's `Title -
+  Artist` / `♫` / `🔇` text design), so no `Icon`/rgba asset was needed for
+  the tray itself. This is separate from the **app bundle icon** (Dock/Finder
+  `.icns`) that packaging (Step 10, spec §9) will still need — don't conflate
+  the two when doing that step.
+- File logging (Step 1) uses `simplelog::WriteLogger` opened in append mode;
+  `RUST_LOG` is parsed manually (`trace`/`debug`/`info`/`warn`/`error`/`off`,
+  default `info`) since `simplelog` doesn't parse it itself the way
+  `env_logger` did.
 
 ---
 
 ## Steps
 
 ### 1. Project scaffold & dependencies
-- [ ] Update `Cargo.toml` with the full stack from spec §3: `tray-icon`,
-      `muda`, `tao` (or `winit`), `mpd_client`, `tokio`, `shlex`, `toml`,
+- [x] Update `Cargo.toml` with the full stack from spec §3: `tray-icon`,
+      `muda`, `tao`, `mpd_client`, `tokio`, `shlex`, `toml`,
       `serde`, a file-logging crate (`simplelog` or similar), plus existing
       `anyhow`/`log`. Drop crates the template added but the spec doesn't need
       (`clap`, `derive_builder`, `lazy_static`, `itertools`) unless something
       later turns out to want them. Make sure dependencies are the most recent stable versions.
-- [ ] Remove the template scaffold: `src/mymodule.rs`, the `frobnicate`/
+- [x] Remove the template scaffold: `src/mymodule.rs`, the `frobnicate`/
       `Opts`/`widgets` demo code in `main.rs`.
-- [ ] Create empty/stub modules: `src/mpd.rs`, `src/command.rs`,
+- [x] Create empty/stub modules: `src/mpd.rs`, `src/command.rs`,
       `src/config.rs`, `src/menu.rs`, wired up with `mod` declarations.
-- [ ] Replace `env_logger` with file logging to
+- [x] Replace `env_logger` with file logging to
       `~/Library/Logs/mpd-controller.log` (create parent dir if missing),
       keeping level configurable via `RUST_LOG`.
 
@@ -57,11 +71,11 @@ startup line.
 
 ---
 
-### 2. Tray icon + winit event loop skeleton
-- [ ] `main.rs`: winit/tao event loop on the main thread; `tray-icon` +
+### 2. Tray icon + `tao` event loop skeleton
+- [x] `main.rs`: `tao` event loop on the main thread; `tray-icon` +
       `muda` menu with a static placeholder title (e.g. `"MpdController"`)
       and a working `Quit` item that exits the loop cleanly.
-- [ ] No MPD or tokio involved yet — this step only proves the GUI shell
+- [x] No MPD or tokio involved yet — this step only proves the GUI shell
       works.
 
 **Verify (manual):** `cargo run` shows the icon in the macOS menu bar; opening
@@ -91,7 +105,7 @@ correctly.
       current `Song`.
 - [ ] Reconnect/backoff on failure (1s → 30s cap per spec §6.1); automatic
       resume of the `idle` loop on recovery.
-- [ ] Wire into `main.rs`: on state change, send a custom winit user event via
+- [ ] Wire into `main.rs`: on state change, send a custom `tao` user event via
       `EventLoopProxy`; update the tray's title with the *raw* data (no
       formatting/truncation yet — this step just proves the data path works
       end-to-end).
@@ -155,7 +169,7 @@ fallback) in isolation from actually invoking `mpc`.
 ---
 
 ### 9. URL scheme handling (in-process)
-- [ ] `main.rs`: winit custom `ApplicationDelegate` to receive URL-open
+- [ ] `main.rs`: `tao` custom `ApplicationDelegate` to receive URL-open
       events; percent-decode the payload; pass to the Step 7/8 dispatch path.
 
 **Verify (automated):** unit test the percent-decode step in isolation if
@@ -186,7 +200,7 @@ launches from `/Applications`; menu bar icon appears with no Dock icon
       `mpc`-fallback command, and a quoted-path `add`.
 
 **Verify (manual):** each link dispatches correctly against real MPD and logs
-the dispatched command. If the winit `ApplicationDelegate` approach proves
+the dispatched command. If the `tao` `ApplicationDelegate` approach proves
 unreliable, fall back to `objc2` + `NSAppleEventManager` per spec §8 and
 re-verify.
 
