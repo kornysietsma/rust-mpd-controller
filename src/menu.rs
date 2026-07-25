@@ -3,6 +3,9 @@ use tray_icon::menu::{Menu, MenuItem};
 
 use crate::mpd::PlayerSnapshot;
 
+pub const PLAY_PAUSE_ID: &str = "play_pause";
+pub const NEXT_ID: &str = "next";
+pub const CLEAR_ID: &str = "clear";
 pub const QUIT_ID: &str = "quit";
 
 const EMPTY_QUEUE_ICON: &str = "♫";
@@ -77,11 +80,14 @@ pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     }
 }
 
-/// Builds a fresh dropdown menu: an optional disabled item showing the
-/// untruncated title (only present when the tray title above it was
-/// truncated), followed by `Quit`.
+/// Builds a fresh dropdown menu (spec §6): `Play/Pause`, `Next`, `Clear`, an
+/// optional disabled item showing the untruncated title (only present when
+/// the tray title above it was truncated), then `Quit`.
 pub fn build_menu(full_text: Option<&str>) -> Result<Menu> {
     let menu = Menu::new();
+    menu.append(&MenuItem::with_id(PLAY_PAUSE_ID, "Play/Pause", true, None))?;
+    menu.append(&MenuItem::with_id(NEXT_ID, "Next", true, None))?;
+    menu.append(&MenuItem::with_id(CLEAR_ID, "Clear", true, None))?;
     if let Some(text) = full_text {
         menu.append(&MenuItem::new(text, false, None))?;
     }

@@ -10,27 +10,50 @@ and independently-verifiable steps.
   piece — build it last so everything it depends on is already solid).
 - **Local MPD is available** for manual verification throughout — most steps
   include a "verify against real MPD" check, not just unit tests.
-- **`command.rs` is the shared dispatch path** for both menu actions (Step 6)
-  and the URL scheme (Step 9) — don't fork this logic between the two.
-- **Open question for Step 6:** menu-item click handlers run on the main
-  thread inside the `tao` event loop closure, but the MPD `Client` currently
-  lives entirely inside the background tokio task (`mpd::run` in `mpd.rs`) —
-  nothing outside that task can issue commands yet. Step 6 needs to decide how
-  a click handler gets a `Client` handle to call `command.rs` functions
-  against (e.g. hand a clone of the `Client` out once connected, via a
-  channel/`OnceLock`/shared state — `Client` is cheap to clone per its own
-  docs).
-- **`mpd_client` handles `idle`/`noidle` internally** — `Client::connect`
-  starts idling automatically and `Client::command` transparently
-  cancels/resumes idle around each command, so `mpd.rs` never issues
-  `idle`/`noidle` itself. Worth knowing before touching `mpd.rs` again so
-  Step 6 doesn't try to duplicate that handling.
+- **How commands get a `Client`:** `MpdEvent::Connected` carries a `Client`
+  clone alongside the `PlayerSnapshot` (sent every time `mpd.rs` publishes a
+  snapshot — cloning is cheap, just reuses the connection). The main thread's
+  `event_loop.run` closure in `main.rs` keeps a local `Option<Client>` (and
+  last-seen `PlayState`, needed by `toggle`) updated from that event, cleared
+  on `Disconnected`. Any new command-issuing entry point (e.g. the URL scheme
+  in Step 9) should read from this same local state rather than inventing a
+  new way to reach the connection.
+- **Dispatching a command without blocking the UI:** `main.rs` has a
+  `spawn_command` helper that clones the `Client`, runs the command as an
+  async task on the tokio `Runtime` (so the `tao` event loop never blocks),
+  and logs+no-ops if not currently connected. Reuse this pattern (or the
+  helper itself) for Step 9's URL-scheme dispatch.
+- **`command.rs` has `toggle`/`next`/`clear`/`add`** (Steps 6–7). Menu items
+  in `main.rs` call `toggle`/`next`/`clear` directly by click ID (click IDs
+  aren't text, so they don't go through a string dispatcher) — this wiring is
+  untouched and should stay that way.
+- **The shared string-dispatch path (Step 7) is `command::dispatch(client,
+  current_state, input)`.** `input` is already-decoded plain text (e.g.
+  `add "Album/Path"`) — percent-decoding is *not* its job; Step 9 decodes the
+  raw URL payload first, then calls `dispatch` with the decoded string.
+  Internally: `tokenize` (shlex) → `parse` (→ private `ParsedCommand` enum:
+  `Toggle`/`Next`/`Clear`/`Add(String)`/`Unrecognized(Vec<String>)`) →
+  execute, calling the same `toggle`/`next`/`clear`/`add` functions Step 6/7
+  built (not duplicating them). `dispatch` returns `DispatchOutcome::Handled`
+  or `DispatchOutcome::Unrecognized(tokens)` — Step 8 should match on the
+  latter to trigger the `mpc` fallback, rather than re-parsing the input
+  itself. `toggle` still needs a `PlayState` supplied by the caller, same as
+  `main.rs` already does for menu clicks.
+- **`add <path>` uses a hand-rolled command, not `mpd_client`'s typed `Add`.**
+  `Add` wraps `addid` (single files only); a private `AddRecursive` struct in
+  `command.rs` implements `mpd_client`'s public `Command` trait directly to
+  send plain `add` instead, matching `mpc add`'s recursive/directory
+  behaviour (see spec §7). Follow this pattern if another command needs raw
+  MPD access `mpd_client`'s typed commands don't cover.
+- **Open judgment call for Step 8:** `parse` currently treats `add` called
+  with the wrong number of arguments (0 or >1) as a hard `Err` from
+  `dispatch`, *not* as `ParsedCommand::Unrecognized` — so a malformed `add`
+  will **not** currently fall through to the Step 8 `mpc` fallback, only
+  truly unknown command names will. Revisit if that turns out to be the
+  wrong call once the fallback exists.
 - **Tray title is text-only** (`TrayIconBuilder::with_title`), no icon image
   asset — separate from the **app bundle icon** (Dock/Finder `.icns`) that
   packaging (Step 10, spec §9) will still need; don't conflate the two there.
-- **Step 4's tray title format is deliberately raw/unformatted**
-  (`"{PlayState:?}: {title-or-url}"`) — Step 5 replaces it with the real
-  `Title - Artist` formatting/truncation/icon-state logic from spec §6.
 - Per spec's scope note, manual verification against real MPD substitutes for
   automated/integration tests on several steps — intentional, not a gap.
 
@@ -121,9 +144,9 @@ MPD — actively playing, connected with empty queue, MPD killed.
 ---
 
 ### 6. Core menu actions
-- [ ] `command.rs`: `toggle` (play/pause), `next`, `clear` as functions
+- [x] `command.rs`: `toggle` (play/pause), `next`, `clear` as functions
       against the MPD connection.
-- [ ] Wire `Play/Pause`, `Next`, `Clear` menu items to call them.
+- [x] Wire `Play/Pause`, `Next`, `Clear` menu items to call them.
 
 **Verify (manual):** each menu action changes real MPD playback state as
 expected, and the tray updates via the existing idle-driven push (not by
@@ -133,7 +156,7 @@ integrated.
 ---
 
 ### 7. Generic command parsing (shared dispatch path)
-- [ ] `command.rs`: the decode → `shlex` tokenize → dispatch function that
+- [x] `command.rs`: the decode → `shlex` tokenize → dispatch function that
       will be shared by the URL scheme (spec §7) and can also be exercised
       directly for the actions built in Step 6. Recognizes `toggle`, `next`,
       `clear`, `add <path>`, etc.
@@ -145,12 +168,14 @@ the exact example from spec §7 (`add "Album/Path"`).
 ---
 
 ### 8. `mpc` fallback
-- [ ] `command.rs`: a decoded/tokenized command not natively recognized is
-      shelled out to the system `mpc` binary verbatim; log what was
-      dispatched (spec §7, §12).
+- [ ] `command.rs`: when `dispatch` (Step 7) returns
+      `DispatchOutcome::Unrecognized(tokens)`, shell the tokens out to the
+      system `mpc` binary verbatim; log what was dispatched (spec §7, §12).
 
-**Verify (automated):** unit test the *dispatch decision* (native vs.
-fallback) in isolation from actually invoking `mpc`.
+**Verify (automated):** the native-vs-unrecognized decision itself is
+already unit-tested via `parse`'s `Unrecognized` cases (Step 7) — no need to
+duplicate that; just test whatever new logic Step 8 adds (e.g. building the
+`mpc` argv from the tokens) in isolation from actually invoking `mpc`.
 **Verify (manual):** a command not natively implemented (e.g. something only
 `mpc` supports) executes correctly against local MPD via the fallback.
 

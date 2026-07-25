@@ -21,7 +21,10 @@ pub struct PlayerSnapshot {
 
 #[derive(Debug, Clone)]
 pub enum MpdEvent {
-    Connected(Box<PlayerSnapshot>),
+    /// Also carries a `Client` handle so callers (e.g. menu actions) can
+    /// issue commands against the same connection. Cloning `Client` is
+    /// cheap — it just reuses the underlying connection.
+    Connected(Box<PlayerSnapshot>, Client),
     Disconnected,
 }
 
@@ -99,6 +102,9 @@ async fn run_idle_loop(
 async fn publish_snapshot(client: &Client, on_event: &impl Fn(MpdEvent)) -> Result<()> {
     let status = client.command(StatusCommand).await?;
     let song = client.command(CurrentSong).await?.map(|s| s.song);
-    on_event(MpdEvent::Connected(Box::new(PlayerSnapshot { status, song })));
+    on_event(MpdEvent::Connected(
+        Box::new(PlayerSnapshot { status, song }),
+        client.clone(),
+    ));
     Ok(())
 }

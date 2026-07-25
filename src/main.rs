@@ -10,10 +10,13 @@ mod menu;
 mod mpd;
 
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
+use mpd_client::client::Client;
+use mpd_client::responses::PlayState;
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -54,6 +57,26 @@ enum UserEvent {
     Mpd(MpdEvent),
 }
 
+/// Runs an MPD command on the tokio runtime without blocking the `tao` event
+/// loop. A no-op (with a logged warning) if we're not currently connected.
+fn spawn_command<F, Fut>(runtime: &Runtime, client: &Option<Client>, label: &'static str, f: F)
+where
+    F: FnOnce(Client) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    match client {
+        Some(client) => {
+            let client = client.clone();
+            runtime.spawn(async move {
+                if let Err(e) = f(client).await {
+                    warn!("failed to run {label}: {e:#}");
+                }
+            });
+        }
+        None => warn!("ignoring {label}: not connected to MPD"),
+    }
+}
+
 fn main() -> Result<()> {
     init_logging()?;
     info!("MpdController starting");
@@ -85,23 +108,44 @@ fn main() -> Result<()> {
         let _ = mpd_proxy.send_event(UserEvent::Mpd(event));
     }));
 
+    let mut current_client: Option<Client> = None;
+    let mut play_state = PlayState::Stopped;
+
     event_loop.run(move |event, _window_target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
-            Event::UserEvent(UserEvent::MenuEvent(menu_event))
-                if menu_event.id == menu::QUIT_ID =>
-            {
-                info!("Quit selected, exiting");
-                *control_flow = ControlFlow::Exit;
+            Event::UserEvent(UserEvent::MenuEvent(menu_event)) => {
+                if menu_event.id == menu::QUIT_ID {
+                    info!("Quit selected, exiting");
+                    *control_flow = ControlFlow::Exit;
+                } else if menu_event.id == menu::PLAY_PAUSE_ID {
+                    let state = play_state;
+                    spawn_command(&runtime, &current_client, "toggle play/pause", move |c| {
+                        async move { command::toggle(&c, state).await }
+                    });
+                } else if menu_event.id == menu::NEXT_ID {
+                    spawn_command(&runtime, &current_client, "next", |c| async move {
+                        command::next(&c).await
+                    });
+                } else if menu_event.id == menu::CLEAR_ID {
+                    spawn_command(&runtime, &current_client, "clear", |c| async move {
+                        command::clear(&c).await
+                    });
+                }
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
                 let display = match mpd_event {
-                    MpdEvent::Connected(snapshot) => {
+                    MpdEvent::Connected(snapshot, client) => {
                         debug!("MPD state: {:?}", snapshot.status.state);
+                        play_state = snapshot.status.state;
+                        current_client = Some(client);
                         menu::display_for_snapshot(&snapshot)
                     }
-                    MpdEvent::Disconnected => menu::disconnected_display(),
+                    MpdEvent::Disconnected => {
+                        current_client = None;
+                        menu::disconnected_display()
+                    }
                 };
                 tray_icon.set_title(Some(&display.title));
                 match menu::build_menu(display.full_text.as_deref()) {

@@ -113,9 +113,18 @@ rust-mpd-controller/
 1. Main thread runs the `tao` event loop and owns the tray icon + menu.
 2. A background tokio task holds an MPD connection and loops on `idle`,
    receiving push notifications when player/playlist state changes.
-3. On each change the task fetches current song + status and sends an update to
-   the main thread via an `EventLoopProxy` (custom user event).
-4. The main thread updates the menu-bar title and rebuilds menu items.
+3. On each change the task fetches current song + status and sends an update
+   to the main thread via an `EventLoopProxy` (custom user event), including a
+   cheap clone of the `mpd_client::Client` so the main thread always has a
+   live handle to issue commands with — no separate channel needed.
+4. The main thread updates the menu-bar title and rebuilds menu items, and
+   keeps the latest `Client` (plus last-known play state) as local state for
+   dispatching commands.
+5. Issuing a command (a menu click, or — once built — a URL-scheme command)
+   clones that `Client` and runs the command as an async task on the tokio
+   runtime, so command execution never blocks the `tao` event loop. If MPD is
+   currently disconnected (no `Client` available yet), the action is a logged
+   no-op rather than an error.
 
 The menu title/menu refresh **only when MPD state actually changes** (idle-driven,
 not polled) — keeps it light.
@@ -175,6 +184,12 @@ icon).
   - (disabled) full current-track label when the title is truncated
   - `Quit`
 
+  `Play/Pause` pauses if MPD is currently playing, resumes if paused, and
+  starts playback from the current queue position if stopped. MPD's `pause`
+  command takes an explicit on/off flag rather than toggling itself, so the
+  app decides which way to go from its own last-known play state rather than
+  round-tripping a status query before every click.
+
 ### 6.1 Resilience
 
 - On MPD unreachable: show `🔇`, keep retrying in the background with backoff
@@ -191,6 +206,11 @@ icon).
   `command.rs` path against MPD.
   - Example: `mpdcontrol://add%20%22Album%2FPath%22` → decode →
     `add "Album/Path"` → run.
+- **`add <path>` is recursive** (directory-aware), matching `mpc add` and
+  MPD's native `add` command — so a path to an album folder enqueues every
+  track under it. `mpd_client`'s typed `Add` command wraps `addid`, which
+  only accepts individual files, so the app defines its own small `Command`
+  impl wrapping plain `add` to get this behaviour.
 - **Fire-and-forget only.** The URL scheme is one-way; there is no return channel
   to the caller. It is for *commands* (add, play, next, …), not queries. Anything
   that needs to return results is out of scope for this entry point.
@@ -283,7 +303,15 @@ Recorded only so the door isn't accidentally closed — **do not build in v1.**
 
 ### Testing & docs (light, per scope note)
 - Unit-test the pure bits that are easy to get wrong: the URL decode → tokenise →
-  command parse path, and config loading/defaults.
+  command parse path, config loading/defaults, and menu display logic (title
+  truncation, icon/state selection).
+- Pure formatting/decision logic (e.g. `menu.rs`'s title truncation and
+  icon-state selection) takes plain primitives (`Option<&str>`, `&[String]`,
+  …) rather than `mpd_client` response types directly — those types
+  (`Song`, `Status`) are `#[non_exhaustive]` with no public constructor, so
+  there's no way to build one as a test fixture outside the crate. Extract the
+  fields needed at the call site and keep new pure logic decoupled the same
+  way.
 - No GUI/integration test harness required.
 - A short README with build/install/config instructions is sufficient.
 
