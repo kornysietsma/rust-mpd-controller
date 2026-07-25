@@ -13,12 +13,12 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tokio::runtime::Runtime;
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::MenuEvent;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
 use crate::mpd::MpdEvent;
@@ -73,14 +73,8 @@ fn main() -> Result<()> {
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    let quit_item = MenuItem::new("Quit", true, None);
-    let quit_id = quit_item.id().clone();
-
-    let tray_menu = Menu::new();
-    tray_menu.append(&quit_item)?;
-
     let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(tray_menu))
+        .with_menu(Box::new(menu::build_menu(None)?))
         .with_title("MpdController")
         .with_tooltip("MpdController")
         .build()?;
@@ -95,23 +89,25 @@ fn main() -> Result<()> {
         *control_flow = ControlFlow::Wait;
 
         match event {
-            Event::UserEvent(UserEvent::MenuEvent(menu_event)) if menu_event.id == quit_id => {
+            Event::UserEvent(UserEvent::MenuEvent(menu_event))
+                if menu_event.id == menu::QUIT_ID =>
+            {
                 info!("Quit selected, exiting");
                 *control_flow = ControlFlow::Exit;
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
-                let title = match mpd_event {
+                let display = match mpd_event {
                     MpdEvent::Connected(snapshot) => {
-                        let song = snapshot
-                            .song
-                            .as_ref()
-                            .map(|s| s.title().unwrap_or(&s.url))
-                            .unwrap_or("-");
-                        format!("{:?}: {song}", snapshot.status.state)
+                        debug!("MPD state: {:?}", snapshot.status.state);
+                        menu::display_for_snapshot(&snapshot)
                     }
-                    MpdEvent::Disconnected => "(disconnected)".to_string(),
+                    MpdEvent::Disconnected => menu::disconnected_display(),
                 };
-                tray_icon.set_title(Some(title));
+                tray_icon.set_title(Some(&display.title));
+                match menu::build_menu(display.full_text.as_deref()) {
+                    Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
+                    Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
+                }
             }
             _ => {}
         }

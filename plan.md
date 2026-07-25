@@ -107,9 +107,9 @@ confirm automatic recovery with no app restart needed.
 ---
 
 ### 5. Menu-bar title formatting & states
-- [ ] `menu.rs`: `"Title - Artist"` formatting, truncation (~25 chars) with
+- [x] `menu.rs`: `"Title - Artist"` formatting, truncation (~25 chars) with
       ellipsis; disabled full-text item shown in the dropdown when truncated.
-- [ ] State icons: `♫` (connected, nothing playing), `🔇` (disconnected),
+- [x] State icons: `♫` (connected, nothing playing), `🔇` (disconnected),
       track text otherwise (spec §6).
 
 **Verify (automated):** unit tests for truncation boundary cases (exactly at
