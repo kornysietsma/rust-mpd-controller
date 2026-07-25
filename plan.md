@@ -3,53 +3,36 @@
 Companion to `spec.md`. Breaks the build into small, independently-completable
 and independently-verifiable steps.
 
-## Technical context & decisions carried into this plan
+## Context for future steps
 
-- **Build order: top-down.** We get a visible tray icon + `tao` event loop
-  running first (Step 2), before any MPD connection exists, then layer in real
-  data, then commands, then the URL scheme last (per spec §12, it's the least-
-  proven piece — building it last means everything it depends on is already
-  solid).
+- **Build order: top-down.** Tray/event-loop shell first, then real data, then
+  commands, then the URL scheme last (spec §12 flags it as the least-proven
+  piece — build it last so everything it depends on is already solid).
 - **Local MPD is available** for manual verification throughout — most steps
-  include a "verify against real MPD" check, not just unit tests, consistent
-  with the spec's "light testing, reliable for daily use" scope note.
-- **`mpc` fallback is in scope for v1** (Step 8), per spec §7.
-- **Packaging is in scope** as the final steps (Steps 10–11), because the URL
-  scheme genuinely cannot be end-to-end tested without the app bundled,
-  `CFBundleURLTypes` registered, and installed in `/Applications` (spec §7, §9).
-- **Module layout** follows spec §4 exactly: `main.rs`, `mpd.rs`, `command.rs`,
-  `config.rs`, `menu.rs`. `command.rs` stays the single dispatch path used by
-  both menu actions and the URL scheme.
-- **Concurrency model** follows spec §4: `tao` event loop + tray on the
-  main thread; a background tokio task owns the MPD connection and `idle`
-  loop; state changes cross to the main thread via an `EventLoopProxy` custom
-  user event (Step 2 built the proxy/user-event plumbing with a `Quit` item as
-  its only consumer so far; Step 4 is where the MPD side starts feeding it).
-- Per spec's scope note, several steps rely on manual verification against a
-  running MPD instance rather than automated tests — that's intentional, not
-  a gap.
-
-## Decisions made while building (not yet reflected as open questions)
-
-- **`tao` chosen over `winit`** for the event loop (spec §3 originally left
-  this open) — tray-icon/muda's own examples and docs lean on `tao`, and it
-  has a smoother track record for macOS tray/menu integration. `spec.md` has
-  been updated throughout to say `tao` rather than `winit`/`tao`.
-- **Tray title is text-only, no icon image.** `TrayIconBuilder::with_title`
-  puts text straight in the macOS menu bar (matching spec §6's `Title -
-  Artist` / `♫` / `🔇` text design), so no `Icon`/rgba asset was needed for
-  the tray itself. This is separate from the **app bundle icon** (Dock/Finder
-  `.icns`) that packaging (Step 10, spec §9) will still need — don't conflate
-  the two when doing that step.
-- File logging (Step 1) uses `simplelog::WriteLogger` opened in append mode;
-  `RUST_LOG` is parsed manually (`trace`/`debug`/`info`/`warn`/`error`/`off`,
-  default `info`) since `simplelog` doesn't parse it itself the way
-  `env_logger` did.
-- **Malformed config TOML fails loudly** (Step 3) — spec §5 only defines
-  defaults for a *missing* file/fields, not an invalid one. A file that exists
-  but fails to parse returns an error from `main()` (app won't start) rather
-  than silently falling back to defaults, since a malformed config is a real
-  user mistake worth surfacing immediately.
+  include a "verify against real MPD" check, not just unit tests.
+- **`command.rs` is the shared dispatch path** for both menu actions (Step 6)
+  and the URL scheme (Step 9) — don't fork this logic between the two.
+- **Open question for Step 6:** menu-item click handlers run on the main
+  thread inside the `tao` event loop closure, but the MPD `Client` currently
+  lives entirely inside the background tokio task (`mpd::run` in `mpd.rs`) —
+  nothing outside that task can issue commands yet. Step 6 needs to decide how
+  a click handler gets a `Client` handle to call `command.rs` functions
+  against (e.g. hand a clone of the `Client` out once connected, via a
+  channel/`OnceLock`/shared state — `Client` is cheap to clone per its own
+  docs).
+- **`mpd_client` handles `idle`/`noidle` internally** — `Client::connect`
+  starts idling automatically and `Client::command` transparently
+  cancels/resumes idle around each command, so `mpd.rs` never issues
+  `idle`/`noidle` itself. Worth knowing before touching `mpd.rs` again so
+  Step 6 doesn't try to duplicate that handling.
+- **Tray title is text-only** (`TrayIconBuilder::with_title`), no icon image
+  asset — separate from the **app bundle icon** (Dock/Finder `.icns`) that
+  packaging (Step 10, spec §9) will still need; don't conflate the two there.
+- **Step 4's tray title format is deliberately raw/unformatted**
+  (`"{PlayState:?}: {title-or-url}"`) — Step 5 replaces it with the real
+  `Title - Artist` formatting/truncation/icon-state logic from spec §6.
+- Per spec's scope note, manual verification against real MPD substitutes for
+  automated/integration tests on several steps — intentional, not a gap.
 
 ---
 
@@ -105,12 +88,12 @@ correctly.
 ---
 
 ### 4. MPD connection core
-- [ ] `mpd.rs`: connect via `mpd_client` using config values; background
+- [x] `mpd.rs`: connect via `mpd_client` using config values; background
       tokio task looping on `idle`; on each relevant event, fetch `Status` +
       current `Song`.
-- [ ] Reconnect/backoff on failure (1s → 30s cap per spec §6.1); automatic
+- [x] Reconnect/backoff on failure (1s → 30s cap per spec §6.1); automatic
       resume of the `idle` loop on recovery.
-- [ ] Wire into `main.rs`: on state change, send a custom `tao` user event via
+- [x] Wire into `main.rs`: on state change, send a custom `tao` user event via
       `EventLoopProxy`; update the tray's title with the *raw* data (no
       formatting/truncation yet — this step just proves the data path works
       end-to-end).

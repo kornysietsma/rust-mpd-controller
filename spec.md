@@ -133,6 +133,10 @@ sensible defaults if the file is missing.
 
 - **Path:** `~/.config/mpd-controller/config.toml`
 - **Defaults if absent:** host `localhost`, port `6600`, empty playlist lists.
+  Missing individual fields in an otherwise-present file default the same way.
+- **Malformed file:** if the file exists but fails to parse, this is treated
+  as a real error (the app fails to start) rather than silently falling back
+  to defaults — a broken config is a user mistake worth surfacing immediately.
 
 ```toml
 mpd_host = "localhost"

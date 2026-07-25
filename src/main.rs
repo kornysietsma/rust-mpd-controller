@@ -17,8 +17,11 @@ use log::{debug, info};
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tokio::runtime::Runtime;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
+
+use crate::mpd::MpdEvent;
 
 fn log_file_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
@@ -48,6 +51,7 @@ fn init_logging() -> Result<()> {
 enum UserEvent {
     TrayIconEvent,
     MenuEvent(MenuEvent),
+    Mpd(MpdEvent),
 }
 
 fn main() -> Result<()> {
@@ -75,20 +79,41 @@ fn main() -> Result<()> {
     let tray_menu = Menu::new();
     tray_menu.append(&quit_item)?;
 
-    let _tray_icon = TrayIconBuilder::new()
+    let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_title("MpdController")
         .with_tooltip("MpdController")
         .build()?;
 
+    let runtime = Runtime::new().context("failed to start tokio runtime")?;
+    let mpd_proxy = event_loop.create_proxy();
+    runtime.spawn(mpd::run(config, move |event| {
+        let _ = mpd_proxy.send_event(UserEvent::Mpd(event));
+    }));
+
     event_loop.run(move |event, _window_target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        if let Event::UserEvent(UserEvent::MenuEvent(menu_event)) = event
-            && menu_event.id == quit_id
-        {
-            info!("Quit selected, exiting");
-            *control_flow = ControlFlow::Exit;
+        match event {
+            Event::UserEvent(UserEvent::MenuEvent(menu_event)) if menu_event.id == quit_id => {
+                info!("Quit selected, exiting");
+                *control_flow = ControlFlow::Exit;
+            }
+            Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
+                let title = match mpd_event {
+                    MpdEvent::Connected(snapshot) => {
+                        let song = snapshot
+                            .song
+                            .as_ref()
+                            .map(|s| s.title().unwrap_or(&s.url))
+                            .unwrap_or("-");
+                        format!("{:?}: {song}", snapshot.status.state)
+                    }
+                    MpdEvent::Disconnected => "(disconnected)".to_string(),
+                };
+                tray_icon.set_title(Some(title));
+            }
+            _ => {}
         }
     });
 }
