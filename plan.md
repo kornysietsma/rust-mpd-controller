@@ -45,6 +45,11 @@ and independently-verifiable steps.
   `RUST_LOG` is parsed manually (`trace`/`debug`/`info`/`warn`/`error`/`off`,
   default `info`) since `simplelog` doesn't parse it itself the way
   `env_logger` did.
+- **Malformed config TOML fails loudly** (Step 3) — spec §5 only defines
+  defaults for a *missing* file/fields, not an invalid one. A file that exists
+  but fails to parse returns an error from `main()` (app won't start) rather
+  than silently falling back to defaults, since a malformed config is a real
+  user mistake worth surfacing immediately.
 
 ---
 
@@ -85,9 +90,9 @@ cleanly.
 ---
 
 ### 3. Config loading
-- [ ] `config.rs`: `serde`-deriving struct for `mpd_host`, `mpd_port`,
+- [x] `config.rs`: `serde`-deriving struct for `mpd_host`, `mpd_port`,
       `favourites`, `key_playlists`, matching spec §5.
-- [ ] Load from `~/.config/mpd-controller/config.toml`; sensible defaults
+- [x] Load from `~/.config/mpd-controller/config.toml`; sensible defaults
       (`localhost`, `6600`, empty lists) when the file or individual fields
       are missing.
 

@@ -13,7 +13,7 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use log::info;
+use log::{debug, info};
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -53,6 +53,9 @@ enum UserEvent {
 fn main() -> Result<()> {
     init_logging()?;
     info!("MpdController starting");
+
+    let config = config::load()?;
+    debug!("Loaded config: {config:?}");
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
 
