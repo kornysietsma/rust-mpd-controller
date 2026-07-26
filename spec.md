@@ -329,12 +329,14 @@ pub struct QueueEntry {
 }
 
 pub struct AlbumJump {
-    pub label: String,     // already truncated album name
+    pub label: String,     // full row text, e.g. "Prev Album: Abbey Road"
+                            // or literally "Start of Album" — only the name
+                            // substring inside it is 40-char truncated, so
+                            // render() never branches on which case produced it
     pub song_id: u64,
 }
 
 pub struct MenuModel {
-    pub title: String,
     pub full_text: Option<String>,
     pub prev_album: Option<AlbumJump>,
     pub next_album: Option<AlbumJump>,
@@ -359,6 +361,11 @@ pub fn model(
 pub fn render(model: &MenuModel) -> Result<Menu>;
 ```
 
+`MenuModel` has no `title` field (an earlier draft of this spec included one,
+mirroring `Display`) — nothing in `render()` ever needs it, since the tray
+title is set independently via the existing `Display`/`display_for_snapshot`
+path below. Cut per YAGNI; add back only if a real consumer shows up.
+
 `format_track`, `truncate`, `empty_queue_display` and `disconnected_display`
 stay as they are.
 
@@ -371,8 +378,10 @@ compile-time constants:
 - `album:<song_id>` — album jump target
 - `addto:<playlist name>` — playlist to add to
 
-Playlist names may contain `:`, so parse with `split_once(':')` and treat the
-**entire remainder** as the name.
+Playlist names may contain `:`, so parse with `strip_prefix("addto:")` (as
+§8.3's dispatch snippet does) and treat the **entire remainder** as the name
+— this only strips the fixed literal prefix, so it can't be tripped up by
+extra colons inside the name itself.
 
 ### 8.3 `main.rs` dispatch
 

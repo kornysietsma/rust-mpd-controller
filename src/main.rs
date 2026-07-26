@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use log::{debug, info, warn};
 use mpd_client::client::Client;
-use mpd_client::responses::PlayState;
+use mpd_client::responses::{PlayState, SongInQueue};
 use percent_encoding::percent_decode_str;
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
@@ -105,12 +105,29 @@ where
     }
 }
 
+/// Extracts the primitives `menu::model` needs from MPD's queue — kept here
+/// rather than in `menu.rs` (spec §0.4/`AGENTS.md`) so the pure model layer
+/// never depends on `mpd_client` types.
+fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
+    queue
+        .iter()
+        .map(|entry| menu::QueueEntry {
+            url: entry.song.url.clone(),
+            album: entry.song.album().map(str::to_string),
+            id: entry.id.0,
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     init_logging()?;
     info!("MpdController starting");
 
     let config = config::load()?;
     debug!("Loaded config: {config:?}");
+    // Captured before `config` moves into `mpd::run` below — the event loop
+    // closure needs it on every menu rebuild.
+    let key_playlists = config.key_playlists.clone();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -125,8 +142,19 @@ fn main() -> Result<()> {
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
+    let initial_model = menu::model(
+        PlayState::Stopped,
+        false,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        None,
+        &[],
+    );
     let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu::build_menu(None)?))
+        .with_menu(Box::new(menu::render(&initial_model)?))
         .with_title("MpdController")
         .with_tooltip("MpdController")
         .build()?;
@@ -186,20 +214,59 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
-                let display = match mpd_event {
-                    MpdEvent::Connected(snapshot, _playlists, client) => {
+                let (display, built_menu) = match mpd_event {
+                    MpdEvent::Connected(snapshot, playlists, client) => {
                         debug!("MPD state: {:?}", snapshot.status.state);
                         play_state = snapshot.status.state;
                         current_client = Some(client);
-                        menu::display_for_snapshot(&snapshot)
+                        let display = menu::display_for_snapshot(&snapshot);
+
+                        let entries = queue_entries(&snapshot.queue);
+                        let current_pos = snapshot.status.current_song.map(|(pos, _)| pos.0);
+                        let current = current_pos.and_then(|pos| entries.get(pos));
+                        let playlists_for_url = snapshot
+                            .song
+                            .as_ref()
+                            .and_then(|song| playlists.membership.get(&song.url))
+                            .cloned()
+                            .unwrap_or_default();
+                        let (title, artists): (Option<&str>, &[String]) = match &snapshot.song {
+                            Some(song) => (song.title(), song.artists()),
+                            None => (None, &[]),
+                        };
+
+                        let model = menu::model(
+                            play_state,
+                            snapshot.status.random,
+                            current,
+                            current_pos,
+                            &entries,
+                            &playlists_for_url,
+                            &key_playlists,
+                            title,
+                            artists,
+                        );
+                        (display, menu::render(&model))
                     }
                     MpdEvent::Disconnected => {
                         current_client = None;
-                        menu::disconnected_display()
+                        let display = menu::disconnected_display();
+                        let model = menu::model(
+                            PlayState::Stopped,
+                            false,
+                            None,
+                            None,
+                            &[],
+                            &[],
+                            &[],
+                            None,
+                            &[],
+                        );
+                        (display, menu::render(&model))
                     }
                 };
                 tray_icon.set_title(Some(&display.title));
-                match menu::build_menu(display.full_text.as_deref()) {
+                match built_menu {
                     Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
                     Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
                 }

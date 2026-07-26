@@ -1,6 +1,6 @@
 use anyhow::Result;
 use mpd_client::responses::PlayState;
-use tray_icon::menu::{Menu, MenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::mpd::PlayerSnapshot;
 
@@ -255,11 +255,12 @@ fn album_nav(
 }
 
 /// Everything needed to render the dropdown menu, computed from primitives
-/// so it's unit-testable without a live MPD connection (spec §8.1). Mirrors
-/// `Display`'s `title`/`full_text` shape for the current track, plus the
-/// album-nav and playlist-membership rows.
+/// so it's unit-testable without a live MPD connection (spec §8.1). No
+/// `title` field — the tray title is set independently via `Display`
+/// (`display_for_snapshot`); spec §8.1 includes one, but nothing consumes it
+/// here, so it's left out (YAGNI) and can be added back if a real need shows
+/// up.
 pub struct MenuModel {
-    pub title: String,
     pub full_text: Option<String>,
     pub prev_album: Option<AlbumJump>,
     pub next_album: Option<AlbumJump>,
@@ -282,15 +283,11 @@ pub fn model(
     title: Option<&str>,
     artists: &[String],
 ) -> MenuModel {
-    let display = match current {
-        Some(entry) => track_display(title, &entry.url, artists),
-        None => empty_queue_display(),
-    };
+    let full_text = current.and_then(|entry| track_display(title, &entry.url, artists).full_text);
     let (prev_album, next_album) = album_nav(state, random, queue, current_pos);
 
     MenuModel {
-        title: display.title,
-        full_text: display.full_text,
+        full_text,
         prev_album,
         next_album,
         in_playlists: in_playlists_list(playlists_for_url),
@@ -298,18 +295,105 @@ pub fn model(
     }
 }
 
-/// Builds a fresh dropdown menu: `Play/Pause`, `Next`, `Clear`, an
-/// optional disabled item showing the untruncated title (only present when
-/// the tray title above it was truncated), then `Quit`.
-pub fn build_menu(full_text: Option<&str>) -> Result<Menu> {
+// All glyphs are pinned to text presentation with U+FE0E (spec §7) so they
+// render monochrome and narrow, matching the menu-bar font weight, rather
+// than falling back to wide colour emoji.
+const PLAY_PAUSE_ICON: &str = "\u{23EF}\u{FE0E}";
+const NEXT_ICON: &str = "\u{23ED}\u{FE0E}";
+const CLEAR_ICON: &str = "\u{23F9}\u{FE0E}";
+const PREV_ALBUM_ICON: &str = "\u{23EE}\u{FE0E}\u{23EE}\u{FE0E}";
+const NEXT_ALBUM_ICON: &str = "\u{23ED}\u{FE0E}\u{23ED}\u{FE0E}";
+/// Prefixed onto the tray title when paused — a `Display`/`track_display`
+/// concern (step 8), not used by `render` below.
+const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
+
+/// The id for an album-navigation menu item (spec §8.2): `album:<song_id>`.
+fn album_jump_item_id(song_id: u64) -> String {
+    format!("album:{song_id}")
+}
+
+/// The id for an "Add to" playlist menu item (spec §8.2): `addto:<name>`.
+/// Playlist names may contain `:`; dispatch (step 10) recovers the full name
+/// via `strip_prefix("addto:")`, which doesn't split on interior colons.
+fn addto_item_id(name: &str) -> String {
+    format!("addto:{name}")
+}
+
+/// Thin: turns an already-computed `MenuModel` into `muda` items. No
+/// decisions here — every rule from spec §5/§6 lives in `model()` above.
+/// Separators are only inserted immediately before a section that turns out
+/// to be non-empty, so the menu never shows two adjacent separators (spec
+/// §6) or a trailing one with nothing after it.
+pub fn render(model: &MenuModel) -> Result<Menu> {
     let menu = Menu::new();
-    menu.append(&MenuItem::with_id(PLAY_PAUSE_ID, "Play/Pause", true, None))?;
-    menu.append(&MenuItem::with_id(NEXT_ID, "Next", true, None))?;
-    menu.append(&MenuItem::with_id(CLEAR_ID, "Clear", true, None))?;
-    if let Some(text) = full_text {
-        menu.append(&MenuItem::new(text, false, None))?;
+
+    menu.append(&MenuItem::with_id(
+        PLAY_PAUSE_ID,
+        format!("{PLAY_PAUSE_ICON} Play/Pause"),
+        true,
+        None,
+    ))?;
+    menu.append(&MenuItem::with_id(
+        NEXT_ID,
+        format!("{NEXT_ICON} Next"),
+        true,
+        None,
+    ))?;
+    menu.append(&MenuItem::with_id(
+        CLEAR_ID,
+        format!("{CLEAR_ICON} Clear"),
+        true,
+        None,
+    ))?;
+
+    if model.prev_album.is_some() || model.next_album.is_some() {
+        menu.append(&PredefinedMenuItem::separator())?;
+        if let Some(jump) = &model.prev_album {
+            menu.append(&MenuItem::with_id(
+                album_jump_item_id(jump.song_id),
+                format!("{PREV_ALBUM_ICON} {}", jump.label),
+                true,
+                None,
+            ))?;
+        }
+        if let Some(jump) = &model.next_album {
+            menu.append(&MenuItem::with_id(
+                album_jump_item_id(jump.song_id),
+                format!("{NEXT_ALBUM_ICON} {}", jump.label),
+                true,
+                None,
+            ))?;
+        }
     }
+
+    let has_track_context =
+        model.full_text.is_some() || !model.in_playlists.is_empty() || !model.add_to.is_empty();
+    if has_track_context {
+        menu.append(&PredefinedMenuItem::separator())?;
+        if let Some(text) = &model.full_text {
+            menu.append(&MenuItem::new(text, false, None))?;
+        }
+        if !model.in_playlists.is_empty() {
+            let submenu = Submenu::new("In playlists", true);
+            for name in &model.in_playlists {
+                submenu.append(&MenuItem::new(name, false, None))?;
+            }
+            menu.append(&submenu)?;
+        }
+        if !model.add_to.is_empty() {
+            let submenu = Submenu::new("Add to", true);
+            for name in &model.add_to {
+                submenu.append(&MenuItem::with_id(addto_item_id(name), name, true, None))?;
+            }
+            menu.append(&submenu)?;
+        }
+    }
+
+    // Block 1 (Play/Pause/Next/Clear) is always present, so this separator
+    // and Quit are always appended — never leaving two separators adjacent.
+    menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
+
     Ok(menu)
 }
 
@@ -747,7 +831,10 @@ mod tests {
         ];
         let playlists_for_url = vec!["Five stars".to_string()];
         let key_playlists = vec!["Five stars".to_string(), "My Top Rated".to_string()];
-        let artists = vec!["Beatles".to_string()];
+        // Long enough to force truncation, so this also exercises the
+        // `full_text` wiring through to `track_display`, not just the
+        // album-nav/playlist assembly.
+        let artists = vec!["The Beatles (Remastered 2019 Edition)".to_string()];
 
         let model = model(
             PlayState::Playing,
@@ -761,8 +848,10 @@ mod tests {
             &artists,
         );
 
-        assert_eq!(model.title, "Come Together - Beatles");
-        assert!(model.full_text.is_none());
+        assert_eq!(
+            model.full_text.as_deref(),
+            Some("Come Together - The Beatles (Remastered 2019 Edition)")
+        );
         let prev = model.prev_album.unwrap();
         assert_eq!(prev.label, "Start of Album");
         assert_eq!(prev.song_id, 1);
@@ -771,5 +860,21 @@ mod tests {
         assert_eq!(next.song_id, 6);
         assert_eq!(model.in_playlists, vec!["Five stars".to_string()]);
         assert_eq!(model.add_to, vec!["My Top Rated".to_string()]);
+    }
+
+    #[test]
+    fn addto_item_id_round_trips_name_containing_a_colon() {
+        // Playlist names may contain ':' (spec §8.2) — `strip_prefix` must
+        // recover the whole remainder, not just up to the first colon.
+        let name = "Side A: Favourites";
+        let id = addto_item_id(name);
+        assert_eq!(id.strip_prefix("addto:"), Some(name));
+    }
+
+    #[test]
+    fn album_jump_item_id_round_trips_song_id() {
+        let id = album_jump_item_id(42);
+        let recovered: u64 = id.strip_prefix("album:").unwrap().parse().unwrap();
+        assert_eq!(recovered, 42);
     }
 }
