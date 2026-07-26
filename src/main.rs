@@ -187,7 +187,7 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
                 let display = match mpd_event {
-                    MpdEvent::Connected(snapshot, client) => {
+                    MpdEvent::Connected(snapshot, _playlists, client) => {
                         debug!("MPD state: {:?}", snapshot.status.state);
                         play_state = snapshot.status.state;
                         current_client = Some(client);

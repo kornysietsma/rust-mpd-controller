@@ -170,24 +170,40 @@ cache, reuse queue, return the fresh cache for `run_idle_loop` to store).
 `publish_full_snapshot`'s `Subsystem::Queue` branch reuses the cached
 `playlist_cache` unchanged.
 
-- [ ] Add the hand-rolled `ListPlaylist` command (§0.2).
-- [ ] Add `PlaylistCache` struct (§0.1) and a
+- [x] Add the hand-rolled `ListPlaylist` command (§0.2).
+- [x] Add `PlaylistCache` struct (§0.1) and a
       `load_playlist_cache(client) -> Result<PlaylistCache>` helper:
       `listplaylists` for names, then `listplaylist <name>` per name, folding
       into the `url -> Vec<name>` map (sorted names per entry).
       Do **not** deduplicate `listplaylists` results — `mpd_client` (unlike
       `mpc`) returns the clean 45-name list already (spec §2.1).
-- [ ] Load on connect (alongside the queue fetch).
-- [ ] Reload (full, all playlists) on `Subsystem::StoredPlaylist` — add a
+- [x] Load on connect (alongside the queue fetch).
+- [x] Reload (full, all playlists) on `Subsystem::StoredPlaylist` — add a
       `Subsystem::StoredPlaylist` match arm in `run_idle_loop` (currently
       falls through the `_ => {}` catch-all left there by step 2).
-- [ ] On a load failure, `warn!` and publish an empty `PlaylistCache` rather
+- [x] On a load failure, `warn!` and publish an empty `PlaylistCache` rather
       than propagating the error (spec §4.2 — menu renders with empty
       membership, not a failure state).
-- [ ] Widen `MpdEvent::Connected` to `(Box<PlayerSnapshot>, Box<PlaylistCache>, Client)`.
+- [x] Widen `MpdEvent::Connected` to `(Box<PlayerSnapshot>, Box<PlaylistCache>, Client)`.
+
+Implemented per the design note above: `publish_full_snapshot` and
+`publish_player_snapshot` both gained a `playlist_cache: &PlaylistCache`
+parameter that they embed unchanged; the new `publish_playlist_snapshot`
+handles the `StoredPlaylist` branch and returns the freshly loaded cache for
+`run_idle_loop` to store. `load_playlist_cache_or_warn` centralizes the
+warn-and-default-on-failure behaviour so both the initial connect and the
+`StoredPlaylist` refresh share it. `main.rs`'s `MpdEvent::Connected` match arm
+was updated to destructure the new third field as `_playlists` (unused until
+step 10), matching step 2's precedent of leaving now-plumbed data unread
+until the layer that consumes it lands.
 
 **Verify:**
-- `cargo build` + `cargo clippy` clean.
+- `cargo build` + `cargo clippy --all-targets` clean, except the same
+  transient `dead_code` warning pattern as step 2 — now also covering
+  `PlaylistCache.membership` — which resolves once steps 6/10 read it.
+- `cargo test` clean (33/33 — no new tests added this step; the pure logic
+  this step touches is exercised by manual QA in step 12, per the plan's
+  existing note that these are thin wiring/fetch functions).
 - Deferred to manual QA: confirm playlist cache reload count/timing in logs
   after a `mpc addplaylist` from outside the app, and after the app's own
   "Add to" click (spec §6.2's "implicit feedback" claim — one write path).
