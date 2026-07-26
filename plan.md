@@ -219,10 +219,10 @@ re-verify.
 ---
 
 ### 12. Resilience pass
-- [ ] Deliberately kill and restart MPD mid-session; confirm the full cycle
+- [x] Deliberately kill and restart MPD mid-session; confirm the full cycle
       (🔇 → backoff retries logged → automatic recovery → idle loop resumes)
       with no app restart.
-- [ ] Confirm log file content is useful per spec §12: connection events,
+- [x] Confirm log file content is useful per spec §12: connection events,
       reconnect attempts, dispatched commands, errors.
 
 **Verify (manual):** exercise the above against real MPD; read back the log
@@ -231,7 +231,7 @@ file and confirm it would be enough to debug a real issue.
 ---
 
 ### 13. README pass
-- [ ] Replace the placeholder README with build/install/config instructions,
+- [x] Replace the placeholder README with build/install/config instructions,
       per spec §12 ("a short README... is sufficient" — keep it light).
 
 **Verify (manual):** a fresh read-through of the README is enough to build,
