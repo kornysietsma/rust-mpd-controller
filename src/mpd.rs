@@ -78,14 +78,14 @@ pub async fn run(config: Config, on_event: impl Fn(MpdEvent) + Send + Sync + 'st
 
                 let mut playlist_cache =
                     load_playlist_cache_or_warn(&client, &config.key_playlists).await;
-                let mut queue = match publish_full_snapshot(&client, &playlist_cache, &on_event).await
-                {
-                    Ok(queue) => queue,
-                    Err(e) => {
-                        warn!("failed to fetch initial MPD status: {e:#}");
-                        Vec::new()
-                    }
-                };
+                let mut queue =
+                    match publish_full_snapshot(&client, &playlist_cache, &on_event).await {
+                        Ok(queue) => queue,
+                        Err(e) => {
+                            warn!("failed to fetch initial MPD status: {e:#}");
+                            Vec::new()
+                        }
+                    };
 
                 run_idle_loop(
                     &client,
@@ -223,7 +223,10 @@ async fn load_playlist_cache(client: &Client, key_playlists: &[String]) -> Resul
             .await
             .with_context(|| format!("failed to list playlist {:?}", playlist.name))?;
         for url in urls {
-            membership.entry(url).or_default().push(playlist.name.clone());
+            membership
+                .entry(url)
+                .or_default()
+                .push(playlist.name.clone());
         }
     }
     for entries in membership.values_mut() {

@@ -28,7 +28,9 @@ just as bug-fix trivia:
    `mpd.rs`'s idle-loop handler now treats `Options` the same as `Player`
    (spec §4.1, §2.1).
 
-`cargo build`/`test` (70/70)/`clippy`/`fmt` are all clean. Manual QA covered
+`cargo build`/`test`/`clippy` are clean. (`fmt` was *not* clean at this point
+despite an earlier claim here that it was — fixed in the post-review pass,
+step 13.) Manual QA covered
 every checklist item that used to live in this file (playlist membership,
 album traversal, icons, paused indicator, resilience, and v1 regressions) —
 all confirmed working live against the real MPD server and library.

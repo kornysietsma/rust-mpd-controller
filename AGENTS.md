@@ -38,6 +38,16 @@ Known gotchas already found this way, so you don't have to re-derive them:
 - `muda` items are `Rc<RefCell<...>>` internally, so it's fine to rebuild the
   whole tray menu from scratch each event (`tray_icon.set_menu(...)`) rather
   than mutating one in place.
+- **`muda::Menu::new` panics off the main thread** ("`muda::Menu` can only be
+  created on the main thread"), and `cargo test` runs tests on spawned
+  threads — so `menu::render` is *untestable* and always will be. Don't waste
+  time writing a test for it. Keep every decision out of `render` and in
+  `menu::model` / `MenuModel`'s `show_*_section` methods, which are pure and
+  do have tests.
+- Don't add `muda` as a direct dependency — `tray_icon::menu` re-exports it.
+  Declaring both lets Cargo resolve two different muda versions, and since
+  muda's menu-event handling is process-global, clicks then silently stop
+  arriving.
 - `mpc lsplaylists` returns each playlist name **twice** (once bare, once with
   `.m3u`) — it's also listing the playlist directory's files, an `mpc`
   artifact. MPD's own `listplaylists` returns clean bare names, which is what

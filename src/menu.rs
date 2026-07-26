@@ -287,6 +287,25 @@ pub struct MenuModel {
     pub add_to: Vec<String>,
 }
 
+impl MenuModel {
+    /// Whether the album-nav section (and the separator preceding it) should
+    /// be emitted at all. Spec §6's "omit the separator when the section
+    /// between them is empty" rule — a decision, so it lives here rather than
+    /// in `render`, which can't be tested (see the module note on
+    /// `muda::Menu` being main-thread-only). Derived rather than stored, so
+    /// it can't drift from the fields it's computed from.
+    pub fn show_album_section(&self) -> bool {
+        self.prev_album.is_some() || self.next_album.is_some()
+    }
+
+    /// Whether the current-track section (full text, "In playlists", "Add
+    /// to") and its preceding separator should be emitted. Same rule and same
+    /// reasoning as `show_album_section`.
+    pub fn show_track_section(&self) -> bool {
+        self.full_text.is_some() || !self.in_playlists.is_empty() || !self.add_to.is_empty()
+    }
+}
+
 /// Pure: assembles a `MenuModel` from already-extracted primitives. All the
 /// rules in spec §5 and §6 live here; `render` (step 7) makes no further
 /// decisions.
@@ -339,11 +358,11 @@ fn addto_item_id(name: &str) -> String {
     format!("addto:{name}")
 }
 
-/// Thin: turns an already-computed `MenuModel` into `muda` items. No
-/// decisions here — every rule from spec §5/§6 lives in `model()` above.
-/// Separators are only inserted immediately before a section that turns out
-/// to be non-empty, so the menu never shows two adjacent separators (spec
-/// §6) or a trailing one with nothing after it.
+/// Turns an already-computed `MenuModel` into `muda` items. Every rule from
+/// spec §5/§6 lives in `model()` and `MenuModel`'s `show_*_section` methods,
+/// which is what keeps them testable: **this function cannot be unit-tested**,
+/// because `muda::Menu::new` panics off the main thread and `cargo test` runs
+/// tests on spawned threads. Keep decisions out of here.
 pub fn render(model: &MenuModel) -> Result<Menu> {
     let menu = Menu::new();
 
@@ -366,7 +385,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
         None,
     ))?;
 
-    if model.prev_album.is_some() || model.next_album.is_some() {
+    if model.show_album_section() {
         menu.append(&PredefinedMenuItem::separator())?;
         if let Some(jump) = &model.prev_album {
             menu.append(&MenuItem::with_id(
@@ -386,9 +405,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
         }
     }
 
-    let has_track_context =
-        model.full_text.is_some() || !model.in_playlists.is_empty() || !model.add_to.is_empty();
-    if has_track_context {
+    if model.show_track_section() {
         menu.append(&PredefinedMenuItem::separator())?;
         if let Some(text) = &model.full_text {
             menu.append(&MenuItem::new(text, false, None))?;
@@ -800,7 +817,11 @@ mod tests {
         ];
         assert_eq!(
             in_playlists_list(&playlists),
-            vec!["album".to_string(), "Five stars".to_string(), "zebra".to_string()]
+            vec![
+                "album".to_string(),
+                "Five stars".to_string(),
+                "zebra".to_string()
+            ]
         );
     }
 
@@ -917,6 +938,59 @@ mod tests {
         assert_eq!(next.song_id, 6);
         assert_eq!(model.in_playlists, vec!["Five stars".to_string()]);
         assert_eq!(model.add_to, vec!["My Top Rated".to_string()]);
+    }
+
+    fn model_with(
+        full_text: Option<&str>,
+        prev_album: Option<AlbumJump>,
+        in_playlists: Vec<String>,
+        add_to: Vec<String>,
+    ) -> MenuModel {
+        MenuModel {
+            full_text: full_text.map(str::to_string),
+            prev_album,
+            next_album: None,
+            in_playlists,
+            add_to,
+        }
+    }
+
+    fn a_jump() -> AlbumJump {
+        AlbumJump {
+            label: "Start of Album".to_string(),
+            song_id: 1,
+        }
+    }
+
+    #[test]
+    fn sections_are_hidden_when_they_would_be_empty() {
+        // Both false means `render` emits no separator for either section —
+        // spec §6's "never two adjacent separators".
+        let model = model_with(None, None, vec![], vec![]);
+        assert!(!model.show_album_section());
+        assert!(!model.show_track_section());
+    }
+
+    #[test]
+    fn album_section_shows_when_either_jump_is_present() {
+        assert!(model_with(None, Some(a_jump()), vec![], vec![]).show_album_section());
+
+        let next_only = MenuModel {
+            next_album: Some(a_jump()),
+            ..model_with(None, None, vec![], vec![])
+        };
+        assert!(next_only.show_album_section());
+    }
+
+    #[test]
+    fn track_section_shows_when_any_of_its_three_parts_is_present() {
+        assert!(model_with(Some("long track text"), None, vec![], vec![]).show_track_section());
+        assert!(
+            model_with(None, None, vec!["Five stars".to_string()], vec![]).show_track_section()
+        );
+        assert!(
+            model_with(None, None, vec![], vec!["My Top Rated".to_string()]).show_track_section()
+        );
     }
 
     #[test]

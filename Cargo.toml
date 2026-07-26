@@ -10,10 +10,13 @@ readme = "README.md"
 
 
 [dependencies]
-anyhow = "1.0.100"
-log = "0.4.28"
-tray-icon = "0.24.1"
-muda = "0.19.3"
+anyhow = "1.0.104"
+log = "0.4.33"
+# `muda` is deliberately *not* a direct dependency: `tray_icon::menu` re-exports
+# it wholesale. Declaring it here too would let Cargo resolve a second, separate
+# muda version from tray-icon's, and muda's menu-event handling is process-global
+# — two versions means clicks silently stop arriving.
+tray-icon = "0.24.2"
 tao = "0.35.3"
 mpd_client = "1.4.1"
 tokio = { version = "1.53.1", features = ["full"] }
