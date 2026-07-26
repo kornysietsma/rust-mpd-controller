@@ -213,25 +213,36 @@ until the layer that consumes it lands.
 New module-private (or `pub(crate)`) functions, unit-tested without any
 `mpd_client` types per spec §9.
 
-- [ ] `album_key(url: &str) -> Option<&str>` — parent directory of a song
+- [x] `album_key(url: &str) -> Option<&str>` — parent directory of a song
       URL; `None` for a root-level file (spec §5.1).
-  - [ ] test: same directory → same album
-  - [ ] test: different directory → different album
-  - [ ] test: multi-disc (same dir, non-contiguous-looking track numbers) →
+  - [x] test: same directory → same album
+  - [x] test: different directory → different album
+  - [x] test: multi-disc (same dir, non-contiguous-looking track numbers) →
         one album
-  - [ ] test: root-level file (no `/`) → `None`, no panic
-- [ ] Run detection: given `queue: &[QueueEntry]` and `current_pos: usize`,
+  - [x] test: root-level file (no `/`) → `None`, no panic
+- [x] Run detection: given `queue: &[QueueEntry]` and `current_pos: usize`,
       compute `(run_start, run_end)` — the maximal contiguous same-`album_key`
       range containing `current_pos`. Scan outward from `current_pos` only.
-  - [ ] test: run length at start / middle / end of a run
-  - [ ] test: single-track run → length 1
-  - [ ] test: empty queue → no panic, no run
-  - [ ] test: queue of exactly one track
-  - [ ] test: `current_pos` out of bounds → no nav, no panic
+  - [x] test: run length at start / middle / end of a run
+  - [x] test: single-track run → length 1
+  - [x] test: empty queue → no panic, no run
+  - [x] test: queue of exactly one track
+  - [x] test: `current_pos` out of bounds → no nav, no panic
 
-**Verify:** `cargo test menu::` — fully covered by unit tests, no live
-connection needed. This is the highest-value testing surface in the whole
-spec; don't shortcut it.
+`QueueEntry` (spec §8.1's full 3-field shape — `url`, `album`, `id`) was
+defined here already, one step ahead of its step-5 checkbox, since
+`album_run`'s signature needs it now; only `url` is read so far, so `album`/
+`id` sit as expected transient dead fields until step 5 reads them for the
+label and jump target. Added a private `same_album` helper so a library-root
+file (no parent directory) never matches another root-level file as "same
+album" — `album_key` returning `None` for both isn't treated as equal.
+
+**Verify:** `cargo test menu::` — fully covered by unit tests (10 new tests),
+no live connection needed. `cargo build`/`clippy --all-targets` clean apart
+from the expected transient `dead_code` warnings (now also covering
+`QueueEntry`, `album_key`, `same_album`, `album_run`, alongside the
+pre-existing `mpd.rs` ones) — these resolve as step 5 wires `model()` up to
+call them. `cargo test` full suite: 43/43 passing.
 
 ## 5. `menu.rs` — pure model, part 2: visibility and traversal
 
