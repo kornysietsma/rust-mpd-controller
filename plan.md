@@ -5,57 +5,53 @@ and independently-verifiable steps.
 
 ## Context for future steps
 
-- **Build order: top-down.** Tray/event-loop shell first, then real data, then
-  commands, then the URL scheme last (spec §12 flags it as the least-proven
-  piece — build it last so everything it depends on is already solid).
 - **Local MPD is available** for manual verification throughout — most steps
   include a "verify against real MPD" check, not just unit tests.
-- **How commands get a `Client`:** `MpdEvent::Connected` carries a `Client`
-  clone alongside the `PlayerSnapshot` (sent every time `mpd.rs` publishes a
-  snapshot — cloning is cheap, just reuses the connection). The main thread's
-  `event_loop.run` closure in `main.rs` keeps a local `Option<Client>` (and
-  last-seen `PlayState`, needed by `toggle`) updated from that event, cleared
-  on `Disconnected`. Any new command-issuing entry point (e.g. the URL scheme
-  in Step 9) should read from this same local state rather than inventing a
-  new way to reach the connection.
-- **Dispatching a command without blocking the UI:** `main.rs` has a
-  `spawn_command` helper that clones the `Client`, runs the command as an
-  async task on the tokio `Runtime` (so the `tao` event loop never blocks),
-  and logs+no-ops if not currently connected. Reuse this pattern (or the
-  helper itself) for Step 9's URL-scheme dispatch.
-- **`command.rs` has `toggle`/`next`/`clear`/`add`** (Steps 6–7). Menu items
-  in `main.rs` call `toggle`/`next`/`clear` directly by click ID (click IDs
-  aren't text, so they don't go through a string dispatcher) — this wiring is
-  untouched and should stay that way.
-- **The shared string-dispatch path (Step 7) is `command::dispatch(client,
-  current_state, input)`.** `input` is already-decoded plain text (e.g.
-  `add "Album/Path"`) — percent-decoding is *not* its job; Step 9 decodes the
-  raw URL payload first, then calls `dispatch` with the decoded string.
-  Internally: `tokenize` (shlex) → `parse` (→ private `ParsedCommand` enum:
-  `Toggle`/`Next`/`Clear`/`Add(String)`/`Unrecognized(Vec<String>)`) →
-  execute, calling the same `toggle`/`next`/`clear`/`add` functions Step 6/7
-  built (not duplicating them). `dispatch` returns `DispatchOutcome::Handled`
-  or `DispatchOutcome::Unrecognized(tokens)` — Step 8 should match on the
-  latter to trigger the `mpc` fallback, rather than re-parsing the input
-  itself. `toggle` still needs a `PlayState` supplied by the caller, same as
-  `main.rs` already does for menu clicks.
-- **`add <path>` uses a hand-rolled command, not `mpd_client`'s typed `Add`.**
-  `Add` wraps `addid` (single files only); a private `AddRecursive` struct in
-  `command.rs` implements `mpd_client`'s public `Command` trait directly to
-  send plain `add` instead, matching `mpc add`'s recursive/directory
-  behaviour (see spec §7). Follow this pattern if another command needs raw
-  MPD access `mpd_client`'s typed commands don't cover.
-- **Open judgment call for Step 8:** `parse` currently treats `add` called
-  with the wrong number of arguments (0 or >1) as a hard `Err` from
-  `dispatch`, *not* as `ParsedCommand::Unrecognized` — so a malformed `add`
-  will **not** currently fall through to the Step 8 `mpc` fallback, only
-  truly unknown command names will. Revisit if that turns out to be the
-  wrong call once the fallback exists.
+- **The full command path is built and working:** `command::dispatch_or_fallback`
+  (in `command.rs`) is the single entry point that takes decoded command text,
+  tries native commands (`toggle`/`next`/`clear`/`add`), and shells out to the
+  system `mpc` binary for anything unrecognized. `main.rs`'s `spawn_command`
+  helper runs it on the tokio runtime without blocking the `tao` event loop.
+  Both the menu (click IDs) and the URL scheme (Step 9) go through this same
+  path — no further plumbing needed here for Steps 10–13.
+- **URL scheme handling turned out simpler than the spec originally
+  planned:** `tao` already implements macOS URL-open delivery natively as
+  `Event::Opened { urls: Vec<url::Url> }` (backed by its own
+  `NSApplicationDelegate`) — no custom delegate/`objc2` code was needed. See
+  spec §8 for the mechanism and the non-obvious detail that `mpdcontrol`
+  being a non-special URL scheme means the command payload lands in
+  `url.host_str()` (opaque host), not `url.path()`.
 - **Tray title is text-only** (`TrayIconBuilder::with_title`), no icon image
   asset — separate from the **app bundle icon** (Dock/Finder `.icns`) that
   packaging (Step 10, spec §9) will still need; don't conflate the two there.
+- **For Step 10 (packaging):** `Cargo.toml`'s `[package.metadata.bundle]`
+  needs a `CFBundleURLTypes` entry registering the `mpdcontrol` scheme
+  (matches the `URL_SCHEME` constant in `main.rs`), matching spec §9.
+- **Gotcha found during Step 10 verification:** `tao`'s event loop defaults to
+  `NSApplicationActivationPolicyRegular` on macOS *at runtime*, which overrides
+  whatever `LSUIElement` says in `Info.plist` — a Dock icon appeared despite
+  `LSUIElement = true` being correctly present in the bundled `Info.plist`.
+  Fixed in `main.rs` with an explicit
+  `event_loop.set_activation_policy(ActivationPolicy::Accessory)` (via
+  `tao::platform::macos::EventLoopExtMacOS`) right after building the event
+  loop. Confirmed fixed after rebuild/reinstall — no Dock icon.
+- **For Step 11 (end-to-end URL verification):** good link shapes to test
+  once installed: `mpdcontrol://toggle` (native), `mpdcontrol://add%20%22Album%2FPath%22`
+  (native, quoted path), and something unrecognized like `mpdcontrol://volume%2050`
+  (exercises the `mpc` fallback). Check `~/Library/Logs/mpd-controller.log`
+  for the dispatched-command line after each.
 - Per spec's scope note, manual verification against real MPD substitutes for
   automated/integration tests on several steps — intentional, not a gap.
+- **Gotcha found during Step 11 verification:** the `mpc` fallback
+  (`command::run_mpc_fallback`) originally shelled out to bare `"mpc"`,
+  relying on `PATH`. That works under `cargo run`/a terminal shell, but a GUI
+  app launched via Launch Services (e.g. an `mpdcontrol://` link opened from
+  Safari/Notes, not a terminal) inherits launchd's minimal `PATH`, which
+  omits Homebrew's install dirs — the fallback failed with "No such file or
+  directory" until fixed. Fixed via `command::resolve_mpc_binary`, which
+  checks `/opt/homebrew/bin/mpc` and `/usr/local/bin/mpc` before falling
+  back to a bare `"mpc"` `PATH` lookup. Confirmed fixed end-to-end (volume
+  actually changed via the fallback after rebuild/reinstall).
 
 ---
 
@@ -168,7 +164,7 @@ the exact example from spec §7 (`add "Album/Path"`).
 ---
 
 ### 8. `mpc` fallback
-- [ ] `command.rs`: when `dispatch` (Step 7) returns
+- [x] `command.rs`: when `dispatch` (Step 7) returns
       `DispatchOutcome::Unrecognized(tokens)`, shell the tokens out to the
       system `mpc` binary verbatim; log what was dispatched (spec §7, §12).
 
@@ -182,23 +178,26 @@ duplicate that; just test whatever new logic Step 8 adds (e.g. building the
 ---
 
 ### 9. URL scheme handling (in-process)
-- [ ] `main.rs`: `tao` custom `ApplicationDelegate` to receive URL-open
-      events; percent-decode the payload; pass to the Step 7/8 dispatch path.
+- [x] `main.rs`: handle `tao`'s built-in `Event::Opened` to receive URL-open
+      events; percent-decode the payload; pass to the Step 7/8 dispatch path
+      (`command::dispatch_or_fallback`). Turned out `tao` already delivers
+      this natively — no custom `ApplicationDelegate` code was needed (see
+      spec §8).
 
-**Verify (automated):** unit test the percent-decode step in isolation if
-separable from the OS event plumbing.
-**Note:** the OS-level event wiring itself cannot be meaningfully verified
-until the URL scheme is registered, which requires packaging (Step 10) — full
-verification is deferred to Step 11. This is expected, not a gap; flagged as
-the highest-risk step per spec §8/§12.
+**Verify (automated):** unit tested the percent-decode step
+(`decode_command_from_url` in `main.rs`) in isolation from the OS event
+plumbing — covers the spec §7 example, a plain command, and scheme rejection.
+**Note:** the OS-level event *delivery* itself still cannot be meaningfully
+verified until the URL scheme is registered, which requires packaging (Step
+10) — full verification is deferred to Step 11. This is expected, not a gap.
 
 ---
 
 ### 10. Packaging
-- [ ] `Cargo.toml`: `[package.metadata.bundle]` — app name `MpdController`,
+- [x] `Cargo.toml`: `[package.metadata.bundle]` — app name `MpdController`,
       icon, `LSUIElement = true`, `CFBundleURLTypes` declaring the
       `mpdcontrol` scheme.
-- [ ] Install script / `justfile`: `cargo bundle --release` → copy
+- [x] Install script / `justfile`: `cargo bundle --release` → copy
       `MpdController.app` to `/Applications`.
 
 **Verify (manual):** `cargo bundle --release` succeeds; the app installs and
@@ -208,12 +207,12 @@ launches from `/Applications`; menu bar icon appears with no Dock icon
 ---
 
 ### 11. End-to-end URL scheme verification
-- [ ] With the app installed per Step 10, trigger `open mpdcontrol://...` (or
+- [x] With the app installed per Step 10, trigger `open mpdcontrol://...` (or
       a link from Safari/Notes) for a few shapes: a native command, an
       `mpc`-fallback command, and a quoted-path `add`.
 
 **Verify (manual):** each link dispatches correctly against real MPD and logs
-the dispatched command. If the `tao` `ApplicationDelegate` approach proves
+the dispatched command. If `tao`'s `Event::Opened` delivery proves
 unreliable, fall back to `objc2` + `NSAppleEventManager` per spec §8 and
 re-verify.
 

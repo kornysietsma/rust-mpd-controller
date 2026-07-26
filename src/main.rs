@@ -21,6 +21,7 @@ use percent_encoding::percent_decode_str;
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tokio::runtime::Runtime;
 use tray_icon::menu::MenuEvent;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
@@ -111,7 +112,8 @@ fn main() -> Result<()> {
     let config = config::load()?;
     debug!("Loaded config: {config:?}");
 
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
 
     let proxy = event_loop.create_proxy();
     TrayIconEvent::set_event_handler(Some(move |_event| {

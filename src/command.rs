@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, anyhow};
 use log::info;
 use mpd_client::client::Client;
@@ -145,6 +147,24 @@ pub async fn dispatch(
     }
 }
 
+/// Homebrew's install locations for `mpc`, checked before falling back to a
+/// bare `"mpc"` lookup via `PATH`. Needed because a GUI app launched via
+/// Launch Services (double-click / `open mpdcontrol://...`, not a terminal)
+/// gets launchd's minimal `PATH`, which omits both of these — confirmed via
+/// the URL-scheme `mpc` fallback failing with "No such file or directory"
+/// despite `mpc` resolving fine from an interactive shell.
+const MPC_CANDIDATE_PATHS: &[&str] = &["/opt/homebrew/bin/mpc", "/usr/local/bin/mpc"];
+
+/// Picks the first candidate path that exists, or `"mpc"` to fall back on
+/// `PATH` lookup (e.g. when run from a dev shell where it already resolves).
+fn resolve_mpc_binary(exists: impl Fn(&str) -> bool) -> &'static str {
+    MPC_CANDIDATE_PATHS
+        .iter()
+        .copied()
+        .find(|path| exists(path))
+        .unwrap_or("mpc")
+}
+
 /// Shells out to the system `mpc` binary for commands `dispatch` doesn't
 /// recognize natively (spec §7/§8), covering the long tail of MPD commands
 /// without reimplementing each one. Tokens are passed straight through as
@@ -161,7 +181,8 @@ async fn run_mpc_fallback(tokens: &[String]) -> Result<()> {
     }
 
     info!("dispatching to mpc fallback: {tokens:?}");
-    let output = TokioCommand::new("mpc")
+    let mpc_binary = resolve_mpc_binary(|path| Path::new(path).exists());
+    let output = TokioCommand::new(mpc_binary)
         .args(tokens)
         .output()
         .await
@@ -267,5 +288,22 @@ mod tests {
         // No `mpc` binary needs to exist for this to pass: an empty token
         // list returns early rather than shelling out.
         assert!(run_mpc_fallback(&[]).await.is_ok());
+    }
+
+    #[test]
+    fn resolve_mpc_binary_prefers_first_existing_candidate() {
+        assert_eq!(
+            resolve_mpc_binary(|path| path == "/opt/homebrew/bin/mpc"),
+            "/opt/homebrew/bin/mpc"
+        );
+        assert_eq!(
+            resolve_mpc_binary(|path| path == "/usr/local/bin/mpc"),
+            "/usr/local/bin/mpc"
+        );
+    }
+
+    #[test]
+    fn resolve_mpc_binary_falls_back_to_path_lookup() {
+        assert_eq!(resolve_mpc_binary(|_| false), "mpc");
     }
 }

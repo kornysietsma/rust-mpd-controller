@@ -51,8 +51,9 @@ Chosen after a fresh (July 2026) review of the Rust ecosystem.
 | Event loop      | `tao` (required on main thread)            |
 | MPD client      | `mpd_client` (async, tokio, typed, `idle`) |
 | Async runtime   | `tokio`                                     |
-| URL scheme      | `tao` custom `ApplicationDelegate` (see §8) |
+| URL scheme      | `tao`'s built-in `Event::Opened` (see §8)  |
 | Command parsing | `shlex` (tokenise the decoded URL command, respecting quotes) |
+| URL parsing     | `url` + `percent-encoding` (extract/decode the command payload) |
 | Config          | `toml` + `serde`                           |
 | Packaging       | `cargo-bundle`                             |
 | Logging         | `log` + a file logger (`simplelog` or similar) |
@@ -67,13 +68,17 @@ Chosen after a fresh (July 2026) review of the Rust ecosystem.
   (updated mid-2026). The newer `tray` crate is early-stage (v0.1.x, no menu
   support); `tray-item` is weaker for dynamic/nested menus. Known macOS tray
   quirks are cosmetic, not blockers.
-- **URL scheme** is the historically fiddly part. Because we already run a
-  `tao` event loop on the main thread (required by `tray-icon` on macOS; `tao`
-  was chosen over plain `winit` as the more tray/menu-proven of the two, per
-  tray-icon/muda's own examples), we handle URL-open events via `tao`'s custom
-  `ApplicationDelegate` rather than hand-rolling raw `NSAppleEventManager`
-  (`kAEGetURL`) plumbing. The matured `objc2` ecosystem is available as a
-  fallback if needed.
+- **URL scheme** is the historically fiddly part, but turned out simpler than
+  expected: `tao` (chosen over plain `winit` as the more tray/menu-proven of
+  the two, per tray-icon/muda's own examples) already installs its own macOS
+  `NSApplicationDelegate` implementing `application:openURLs:`, and surfaces
+  it as a plain `Event::Opened { urls: Vec<url::Url> }` on the same event loop
+  we already run for the tray. No custom delegate or hand-rolled
+  `NSAppleEventManager` (`kAEGetURL`) plumbing was needed — see §8 for the
+  detail this uncovered about how `url::Url` parses a non-special scheme like
+  `mpdcontrol`. The matured `objc2` ecosystem remains available as a fallback
+  if `Event::Opened` ever proves unreliable in practice (unconfirmed until
+  end-to-end testing, spec §12).
 - **`mpd_client`** (async/tokio, typed responses, first-class `idle`) is the
   best MPD library for a push-based, event-driven service.
 
@@ -219,9 +224,9 @@ icon).
   of MPD commands for fire-and-forget use. (Implementer's discretion; keep it
   simple.)
 - **Delivery:** macOS routes the URL to the running **MpdController.app**, which
-  handles the URL-open event (`tao` `ApplicationDelegate`) and dispatches within
-  its own process/MPD connection. If the app isn't running, macOS launches it
-  first.
+  handles the URL-open event (`tao`'s built-in `Event::Opened`, see §8) and
+  dispatches within its own process/MPD connection. If the app isn't running,
+  macOS launches it first.
 - **Registration:** via `CFBundleURLTypes` in the bundle `Info.plist` (§9). The
   app must live in `/Applications` for macOS to honour the registration; it
   cannot be registered at runtime.
@@ -235,13 +240,23 @@ icon).
 
 ## 8. URL-event handling detail
 
-- Handled in-process via `tao`'s custom `ApplicationDelegate`, which receives the
-  URL when macOS opens it — the event loop we already run for the tray makes this
-  the natural mechanism (no separate process, no polling).
+- Handled in-process via `tao`'s built-in `Event::Opened { urls: Vec<url::Url>
+  }`, emitted from `tao`'s own macOS `NSApplicationDelegate`
+  (`application:openURLs:`) onto the same event loop we already run for the
+  tray — no custom delegate code required, no separate process, no polling.
+- **Payload extraction:** `mpdcontrol` is a non-special URL scheme (per the
+  WHATWG URL rules the `url` crate implements), so everything after `//` in
+  e.g. `mpdcontrol://add%20%22Album%2FPath%22` parses into the URL's
+  (still percent-encoded) opaque **host** component — `url.path()` is empty.
+  The app reads `url.host_str()` and percent-decodes it (`percent-encoding`
+  crate) to recover the command text; this was confirmed experimentally
+  against the exact spec §7 example before relying on it.
 - **Fallback if unreliable:** drop to `objc2` and register an
   `NSAppleEventManager` handler for `kInternetEventClass` / `kAEGetURL`,
-  extracting the URL from `keyDirectObject`. This is the historically documented
-  path and the main risk area (see §12).
+  extracting the URL from `keyDirectObject`. Not needed so far — `tao`'s
+  `Event::Opened` compiles and unit-tests cleanly; the only unconfirmed part
+  is whether macOS actually routes registered `mpdcontrol://` links to it at
+  runtime, which requires packaging to test (see §12).
 
 ---
 
@@ -316,7 +331,12 @@ Recorded only so the door isn't accidentally closed — **do not build in v1.**
 - A short README with build/install/config instructions is sufficient.
 
 ### Open questions / risks
-- **`tao` `ApplicationDelegate` URL handling** is the least-proven piece; if it
-  proves unreliable, fall back to `objc2` / `NSAppleEventManager` (§8).
+- **URL-open event delivery at runtime** is the remaining unproven piece.
+  `tao`'s `Event::Opened` (§8) is implemented, compiles, and is unit-tested
+  down to the decode step, which lowers the risk considerably versus the
+  original plan to hand-roll delegate code — but whether macOS actually
+  routes a registered `mpdcontrol://` link to a running/cold-started
+  `MpdController.app` can only be confirmed once the scheme is registered via
+  packaging. Fall back to `objc2` / `NSAppleEventManager` (§8) if it doesn't.
 - **`tray-icon` macOS cosmetic quirks** (icon rendering, occasional double icon
   on some macOS versions) — expected minor; verify on the current OS.
