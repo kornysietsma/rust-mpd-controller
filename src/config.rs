@@ -12,7 +12,6 @@ const DEFAULT_MPD_PORT: u16 = 6600;
 pub struct Config {
     pub mpd_host: String,
     pub mpd_port: u16,
-    pub favourites: String,
     pub key_playlists: Vec<String>,
 }
 
@@ -21,7 +20,6 @@ impl Default for Config {
         Config {
             mpd_host: DEFAULT_MPD_HOST.to_string(),
             mpd_port: DEFAULT_MPD_PORT,
-            favourites: String::new(),
             key_playlists: Vec::new(),
         }
     }
@@ -89,7 +87,6 @@ mod tests {
 
         assert_eq!(config.mpd_host, "myhost");
         assert_eq!(config.mpd_port, DEFAULT_MPD_PORT);
-        assert_eq!(config.favourites, "");
         assert!(config.key_playlists.is_empty());
     }
 
@@ -100,7 +97,6 @@ mod tests {
             r#"
                 mpd_host = "myhost"
                 mpd_port = 1234
-                favourites = "Five stars"
                 key_playlists = ["Five stars", "My Top Rated"]
             "#,
         );
@@ -113,7 +109,6 @@ mod tests {
             Config {
                 mpd_host: "myhost".to_string(),
                 mpd_port: 1234,
-                favourites: "Five stars".to_string(),
                 key_playlists: vec!["Five stars".to_string(), "My Top Rated".to_string()],
             }
         );
@@ -127,5 +122,18 @@ mod tests {
         fs::remove_file(&path).ok();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn stray_favourites_key_is_ignored() {
+        let path = write_temp(
+            "stray-favourites",
+            "mpd_host = \"myhost\"\nfavourites = \"Five stars\"\n",
+        );
+
+        let config = load_from(&path).unwrap();
+        fs::remove_file(&path).ok();
+
+        assert_eq!(config.mpd_host, "myhost");
     }
 }

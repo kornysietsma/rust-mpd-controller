@@ -50,9 +50,10 @@ adding merge logic to `main.rs`. The "reuse cached queue on Player events"
 optimization from spec §4.1 is purely about avoiding an MPD round trip — it
 doesn't change what gets published.
 
-Loading the playlist cache is a separate async step from
-`publish_snapshot`; a connect does both (fresh queue fetch + fresh playlist
-load) before the first publish.
+Loading the playlist cache is a separate async step from fetching the
+queue; a connect does both (fresh queue fetch + fresh playlist load) before
+the first publish. See step 3's design note below for exactly how this
+threads through `run_idle_loop` alongside the queue cache added in step 2.
 
 ### 0.2 `listplaylist` needs a hand-rolled command
 
@@ -111,46 +112,63 @@ without needing a live `Menu`.
 
 ---
 
-## 1. `config.rs` — remove `favourites`
+## 1. `config.rs` — remove `favourites` — ✅ done
 
-- [ ] Remove the `favourites` field from `Config` and its `Default` impl.
-- [ ] Update `partial_file_defaults_missing_fields` to drop the `favourites`
-      assertion.
-- [ ] Update `full_file_parses_all_fields` to drop `favourites` from both the
-      TOML fixture and the expected `Config` value.
-- [ ] Add a test confirming a config file that still contains a stray
-      `favourites = "..."` line loads without error and without surfacing the
-      value anywhere (serde's default unknown-key ignoring — one assertion is
-      enough, it's a property of serde not our code).
+Removed the `favourites` field from `Config`/`Default`; updated the two
+existing tests; added `stray_favourites_key_is_ignored` confirming an old
+config file with a leftover `favourites` key still loads fine. No other code
+referenced the field. `cargo test`/`clippy` clean (33/33 tests).
 
-**Verify:** `cargo test config::`. No manual step — pure config parsing.
+## 2. `mpd.rs` — queue cache — ✅ done
 
-## 2. `mpd.rs` — queue cache
+`PlayerSnapshot` now carries `queue: Vec<SongInQueue>`. Added `fetch_queue`
+and `fetch_status_and_song` helpers, and split publishing into:
+- `publish_full_snapshot(client, on_event) -> Result<Vec<SongInQueue>>` —
+  fetches status+song+queue, publishes, returns the queue for caching. Used
+  on connect and on `Subsystem::Queue`.
+- `publish_player_snapshot(client, queue: &[SongInQueue], on_event) -> Result<()>`
+  — fetches status+song only, publishes with the passed-in (cached) queue.
+  Used on `Subsystem::Player`.
 
-- [ ] Add `queue: Vec<SongInQueue>` to `PlayerSnapshot`.
-- [ ] Add a `fetch_queue(client) -> Result<Vec<SongInQueue>>` helper using
-      `mpd_client::commands::Queue::all()`.
-- [ ] On connect: fetch `Status`, `CurrentSong`, `Queue` before the first
-      publish (extend the existing `publish_snapshot` or split it — see
-      below).
-- [ ] On `Subsystem::Queue`: refetch all three.
-- [ ] On `Subsystem::Player`: refetch `Status` + `CurrentSong` only; reuse
-      the last-fetched queue (kept in a local `Vec<SongInQueue>` in `run()`,
-      threaded through `run_idle_loop`).
-- [ ] Restructure `publish_snapshot` to take the queue as a parameter (or
-      split into "refetch player bits" vs "refetch queue" helpers) so the two
-      trigger paths don't duplicate fetch logic.
+`run()` holds `let mut queue = ...` and passes `&mut queue` into
+`run_idle_loop`, which updates it only on `Subsystem::Queue` (via the match
+arm `Subsystem::Queue => ... *queue = fresh_queue`). Other subsystems fall
+through a `_ => {}` arm — step 3 adds `Subsystem::StoredPlaylist` there.
 
-**Verify:** This layer is thin plumbing over a live connection and isn't
-meaningfully unit-testable in isolation (per `AGENTS.md`, `Status`/`Song` have
-no public constructor). Verify by:
-- `cargo build` + `cargo clippy` clean.
-- Deferred to the final manual QA pass: confirm via logs (`RUST_LOG=debug`)
-  that a queue-changing action (e.g. `mpc add`) triggers a full refetch and a
-  play/pause/next does not (no `playlistinfo` line in the debug log on a bare
-  `Subsystem::Player` event).
+`cargo build`/`clippy`/`test` clean, except one expected transient `dead_code`
+warning on `PlayerSnapshot.queue` — nothing reads it yet since `menu.rs`/
+`main.rs` aren't wired up until steps 6–10. Not worth silencing; it resolves
+itself as later steps land.
 
 ## 3. `mpd.rs` — playlist cache
+
+### Design note: threading two caches through `run_idle_loop`
+
+Per spec §4.2 and this plan's §0.1, **every** publish must carry "the latest
+known everything" — so `playlist_cache` needs the same reuse-on-other-events
+treatment that `queue` already got in step 2, just keyed off a different
+subsystem. Concretely, `run_idle_loop` needs a second threaded local,
+`playlist_cache: &mut PlaylistCache`, alongside `queue`:
+
+| Trigger | status+song | queue | playlist_cache |
+|---|---|---|---|
+| Connect | fetch | fetch | fetch |
+| `Subsystem::Queue` | fetch | fetch | **reuse cached** |
+| `Subsystem::Player` | fetch | reuse cached | **reuse cached** |
+| `Subsystem::StoredPlaylist` | fetch | reuse cached | **fetch** |
+
+Status+song are cheap enough that every path just refetches them (matching
+the existing `publish_player_snapshot` shape) — only `queue` and
+`playlist_cache` are expensive enough to cache and reuse, each independently
+keyed to the one subsystem event that actually changes it.
+
+Concretely this means: `publish_full_snapshot` and `publish_player_snapshot`
+both gain a `playlist_cache: &PlaylistCache` parameter (to embed in the
+published event); a new `publish_playlist_snapshot(client, queue: &[SongInQueue], on_event) -> Result<PlaylistCache>`
+handles the `StoredPlaylist` branch (fetch status+song, reload playlist
+cache, reuse queue, return the fresh cache for `run_idle_loop` to store).
+`publish_full_snapshot`'s `Subsystem::Queue` branch reuses the cached
+`playlist_cache` unchanged.
 
 - [ ] Add the hand-rolled `ListPlaylist` command (§0.2).
 - [ ] Add `PlaylistCache` struct (§0.1) and a
@@ -160,10 +178,9 @@ no public constructor). Verify by:
       Do **not** deduplicate `listplaylists` results — `mpd_client` (unlike
       `mpc`) returns the clean 45-name list already (spec §2.1).
 - [ ] Load on connect (alongside the queue fetch).
-- [ ] Reload (full, all playlists) on `Subsystem::StoredPlaylist`.
-- [ ] Extend the event filter
-      (`matches!(subsystem, Subsystem::Player | Subsystem::Queue)`) to
-      include `Subsystem::StoredPlaylist`.
+- [ ] Reload (full, all playlists) on `Subsystem::StoredPlaylist` — add a
+      `Subsystem::StoredPlaylist` match arm in `run_idle_loop` (currently
+      falls through the `_ => {}` catch-all left there by step 2).
 - [ ] On a load failure, `warn!` and publish an empty `PlaylistCache` rather
       than propagating the error (spec §4.2 — menu renders with empty
       membership, not a failure state).
