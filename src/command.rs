@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use log::info;
 use mpd_client::client::Client;
-use mpd_client::commands::{ClearQueue, Command as MpdCommand, Next, Play, SetPause};
+use mpd_client::commands::{
+    AddToPlaylist, ClearQueue, Command as MpdCommand, Next, Play, SetPause, SongId,
+};
 use mpd_client::protocol::command::Command as RawCommand;
 use mpd_client::protocol::response::Frame;
 use mpd_client::responses::{PlayState, TypedResponseError};
@@ -44,6 +46,27 @@ pub async fn clear(client: &Client) -> Result<()> {
         .command(ClearQueue)
         .await
         .context("failed to clear queue")?;
+    Ok(())
+}
+
+/// Jumps playback to `id` (album nav, menu-only — see spec §5.4). Uses the
+/// queue's `SongId` rather than `SongPosition` since positions shift if the
+/// queue is edited between the snapshot the menu was built from and the
+/// click.
+pub async fn play_song(client: &Client, id: SongId) -> Result<()> {
+    client
+        .command(Play::song(id))
+        .await
+        .with_context(|| format!("failed to play song id {}", id.0))?;
+    Ok(())
+}
+
+/// MPD's `playlistadd <playlist> <song url>` (menu-only "Add to", spec §6.2).
+pub async fn add_to_playlist(client: &Client, playlist: &str, url: &str) -> Result<()> {
+    client
+        .command(AddToPlaylist::new(playlist, url))
+        .await
+        .with_context(|| format!("failed to add {url:?} to playlist {playlist:?}"))?;
     Ok(())
 }
 

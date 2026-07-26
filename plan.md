@@ -9,7 +9,7 @@ Progress is tracked via the checkboxes below. No fixed commit-per-step rule —
 commit at your discretion. A consolidated manual QA pass against the live MPD
 server closes out the work (§ at the end of this file).
 
-**Status: steps 1–8 done. Next: step 9 (`command.rs` new command functions).**
+**Status: steps 1–9 done. Next: step 10 (`main.rs` state and dispatch).**
 
 ## 0. Technical context and decisions
 
@@ -166,13 +166,13 @@ appears in the tray and the track text is unaffected.
 
 ## 9. `command.rs` — new command functions
 
-- [ ] `play_song(client: &Client, id: SongId) -> Result<()>` wrapping
+- [x] `play_song(client: &Client, id: SongId) -> Result<()>` wrapping
       `Play::song(id)` (confirmed typed support exists — `Play::song<S: Into<Song>>`,
       and `SongId` implements `Into<Song>`).
-- [ ] `add_to_playlist(client: &Client, playlist: &str, url: &str) -> Result<()>`
+- [x] `add_to_playlist(client: &Client, playlist: &str, url: &str) -> Result<()>`
       wrapping `AddToPlaylist::new(playlist, url)` (§0.2 above — typed, no
       hand-rolling).
-- [ ] No changes to `ParsedCommand`, `dispatch`, or `dispatch_or_fallback` —
+- [x] No changes to `ParsedCommand`, `dispatch`, or `dispatch_or_fallback` —
       spec §8.4 keeps these out of scope; album nav and playlist-add stay
       menu-only.
 
