@@ -29,7 +29,7 @@ pub enum MpdEvent {
 }
 
 /// Runs forever: connects to MPD, streams state-change updates via `on_event`, and
-/// reconnects with backoff (spec §6.1) on any disconnect.
+/// reconnects with backoff on any disconnect.
 pub async fn run(config: Config, on_event: impl Fn(MpdEvent) + Send + Sync + 'static) {
     let mut backoff = INITIAL_BACKOFF;
 

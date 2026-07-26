@@ -29,11 +29,11 @@ use url::Url;
 
 use crate::mpd::MpdEvent;
 
-/// The scheme registered for this app (spec §7, §9): `mpdcontrol://...`.
+/// The scheme registered for this app: `mpdcontrol://...`.
 const URL_SCHEME: &str = "mpdcontrol";
 
 /// Extracts and percent-decodes the command payload from an `mpdcontrol://`
-/// URL (spec §7). `mpdcontrol` is a non-special URL scheme, so per the
+/// URL. `mpdcontrol` is a non-special URL scheme, so per the
 /// WHATWG URL parsing rules the `url` crate implements, everything after
 /// `//` lands in the (still percent-encoded) opaque host component, not the
 /// path — confirmed against `mpdcontrol://add%20%22Album%2FPath%22`, which

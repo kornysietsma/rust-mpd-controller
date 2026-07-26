@@ -20,7 +20,7 @@ pub struct Display {
     pub full_text: Option<String>,
 }
 
-/// Formats a song as "Title - Artist", per spec §6. Falls back to the song's
+/// Formats a song as "Title - Artist". Falls back to the song's
 /// URL when there's no title tag, and omits the artist half when there are no
 /// artist tags. Takes already-extracted primitives (rather than mpd_client's
 /// `Song`) so this pure logic is unit-testable without a live connection.
@@ -45,7 +45,7 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-/// Computes the tray display for a song that's playing/paused (spec §6):
+/// Computes the tray display for a song that's playing/paused:
 /// the truncated track text, plus the untruncated text when truncation
 /// occurred so a disabled dropdown item can show it in full.
 pub fn track_display(title: Option<&str>, url: &str, artists: &[String]) -> Display {
@@ -55,7 +55,7 @@ pub fn track_display(title: Option<&str>, url: &str, artists: &[String]) -> Disp
     Display { title, full_text }
 }
 
-/// The tray display when connected but nothing is playing (spec §6).
+/// The tray display when connected but nothing is playing.
 pub fn empty_queue_display() -> Display {
     Display {
         title: EMPTY_QUEUE_ICON.to_string(),
@@ -63,7 +63,7 @@ pub fn empty_queue_display() -> Display {
     }
 }
 
-/// The tray display while MPD is unreachable (spec §6.1).
+/// The tray display while MPD is unreachable.
 pub fn disconnected_display() -> Display {
     Display {
         title: DISCONNECTED_ICON.to_string(),
@@ -80,7 +80,7 @@ pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     }
 }
 
-/// Builds a fresh dropdown menu (spec §6): `Play/Pause`, `Next`, `Clear`, an
+/// Builds a fresh dropdown menu: `Play/Pause`, `Next`, `Clear`, an
 /// optional disabled item showing the untruncated title (only present when
 /// the tray title above it was truncated), then `Quit`.
 pub fn build_menu(full_text: Option<&str>) -> Result<Menu> {

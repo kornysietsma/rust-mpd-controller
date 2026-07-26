@@ -50,7 +50,7 @@ pub async fn clear(client: &Client) -> Result<()> {
 /// MPD's `add` command, wrapped by hand because `mpd_client`'s typed `Add`
 /// wraps `addid` instead, which only accepts a single file. Plain `add`
 /// (what `mpc add` also uses) adds a directory recursively, which is the
-/// behaviour we want for `add <path>` (spec §7).
+/// behaviour we want for `add <path>`.
 struct AddRecursive<'a>(&'a str);
 
 impl MpdCommand for AddRecursive<'_> {
@@ -75,7 +75,7 @@ pub async fn add(client: &Client, path: &str) -> Result<()> {
 
 /// Result of dispatching a decoded command string: either it matched a
 /// known command and was run, or it didn't and the caller may want to fall
-/// back to something else (e.g. shelling out to `mpc` — spec §7, step 8).
+/// back to something else (e.g. shelling out to `mpc`).
 pub enum DispatchOutcome {
     Handled,
     Unrecognized(Vec<String>),
@@ -83,8 +83,7 @@ pub enum DispatchOutcome {
 
 /// A decoded command string, tokenized and matched against the commands we
 /// know natively. Kept separate from execution so the matching decision
-/// (spec §7/§8: native vs. unrecognized) is unit-testable without a live
-/// MPD connection.
+/// (native vs. unrecognized) is unit-testable without a live MPD connection.
 #[derive(Debug, PartialEq, Eq)]
 enum ParsedCommand {
     Toggle,
@@ -94,9 +93,9 @@ enum ParsedCommand {
     Unrecognized(Vec<String>),
 }
 
-/// Tokenizes an already percent-decoded command string, respecting quotes
-/// (spec §7). Percent-decoding itself happens upstream, at the URL-scheme
-/// entry point (step 9) — this function only ever sees plain text.
+/// Tokenizes an already percent-decoded command string, respecting quotes.
+/// Percent-decoding itself happens upstream, at the URL-scheme entry point
+/// in `main.rs` — this function only ever sees plain text.
 fn tokenize(input: &str) -> Result<Vec<String>> {
     shlex::split(input)
         .ok_or_else(|| anyhow!("failed to tokenize command (unbalanced quotes?): {input:?}"))
@@ -117,10 +116,10 @@ fn parse(input: &str) -> Result<ParsedCommand> {
     Ok(parsed)
 }
 
-/// The shared dispatch path (spec §7): decoded command text in, matching
-/// native command run against `client`. Used directly by the URL scheme
-/// (step 9) and exercisable for the actions already wired to menu clicks
-/// (step 6) without duplicating their menu-click call sites.
+/// The shared dispatch path: decoded command text in, matching native
+/// command run against `client`. Used directly by the URL scheme, and
+/// exercisable for the actions already wired to menu clicks without
+/// duplicating their menu-click call sites.
 pub async fn dispatch(
     client: &Client,
     current_state: PlayState,
@@ -166,10 +165,9 @@ fn resolve_mpc_binary(exists: impl Fn(&str) -> bool) -> &'static str {
 }
 
 /// Shells out to the system `mpc` binary for commands `dispatch` doesn't
-/// recognize natively (spec §7/§8), covering the long tail of MPD commands
-/// without reimplementing each one. Tokens are passed straight through as
-/// `argv` entries (not via a shell), so no quoting/escaping is needed here —
-/// this is the "verbatim" pass-through the spec describes.
+/// recognize natively, covering the long tail of MPD commands without
+/// reimplementing each one. Tokens are passed straight through as `argv`
+/// entries (not via a shell), so no quoting/escaping is needed here.
 ///
 /// An empty token list (e.g. empty decoded input) is treated as a no-op
 /// rather than invoking bare `mpc`, which would otherwise just print MPD's
@@ -199,9 +197,8 @@ async fn run_mpc_fallback(tokens: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The full command path (spec §7/§8): tries native dispatch first, falling
-/// back to `mpc` for anything unrecognized. This is the entry point the URL
-/// scheme (step 9) is expected to call.
+/// The full command path: tries native dispatch first, falling back to `mpc`
+/// for anything unrecognized. This is the entry point the URL scheme calls.
 pub async fn dispatch_or_fallback(
     client: &Client,
     current_state: PlayState,

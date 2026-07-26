@@ -1,9 +1,13 @@
 # Agent notes
 
-Full spec and step-by-step plan live in `spec.md` and `plan.md`. Work through
-`plan.md` one step at a time, checking boxes off as you go, and record any
-non-obvious decisions made along the way in its "Decisions made while
-building" section.
+A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. v1 is
+complete; see `README.md` for architecture and usage, and
+`docs/implementation-details.md` for the non-obvious details behind it.
+
+Scope is deliberately personal-tool-sized: prefer simple working code over
+exhaustive coverage, and don't design in speculative complexity. Ideas that
+were explicitly deferred are in `docs/future_expansions.md` — check there
+before proposing "obvious" additions.
 
 ## Verifying GUI/tray state
 
@@ -34,3 +38,16 @@ Known gotchas already found this way, so you don't have to re-derive them:
 - `muda` items are `Rc<RefCell<...>>` internally, so it's fine to rebuild the
   whole tray menu from scratch each event (`tray_icon.set_menu(...)`) rather
   than mutating one in place.
+
+## Load-bearing oddities — don't "clean these up"
+
+Each of these looks redundant but fixes a real bug that only reproduces in the
+installed app, not under `cargo run`. Reasons are in
+`docs/implementation-details.md`.
+
+- The explicit `set_activation_policy(ActivationPolicy::Accessory)` call in
+  `main.rs`, *in addition to* `LSUIElement` in the plist.
+- The absolute Homebrew paths in `command::MPC_CANDIDATE_PATHS`.
+- `decode_command_from_url` reading the URL's **host**, not its path.
+- `command::AddRecursive` hand-wrapping MPD's `add` instead of using
+  `mpd_client`'s typed `Add`.

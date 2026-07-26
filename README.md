@@ -4,7 +4,49 @@ A macOS menu-bar widget for controlling a local [MPD](https://www.musicpd.org/)
 (Music Player Daemon) instance, plus a registered `mpdcontrol://` URL scheme
 for fire-and-forget commands from anywhere on the system.
 
-This is a personal tool — see `spec.md` for the full design and rationale.
+This is a personal tool. Testing and documentation rigour are intentionally
+light — enough to be reliable for daily personal use, not production-grade.
+
+- [docs/implementation-details.md](docs/implementation-details.md) — the
+  non-obvious things that took real digging (macOS URL-scheme quirks, Dock
+  icon, `PATH` under Launch Services, library sharp edges).
+- [docs/future_expansions.md](docs/future_expansions.md) — deferred ideas and
+  deliberate non-goals.
+
+## How it works
+
+One binary, one long-running process, one crate. Both entry points — the menu
+bar and the URL scheme — are handled inside the same process, which owns the
+MPD connection and any future in-memory state.
+
+| Module          | Responsibility                                            |
+|-----------------|-----------------------------------------------------------|
+| `src/main.rs`   | startup, `tao` event loop, tray icon + menu, URL handling  |
+| `src/mpd.rs`    | MPD connection, `idle` loop, reconnect/backoff, snapshots  |
+| `src/command.rs`| decoded command string → dispatch against MPD              |
+| `src/menu.rs`   | menu construction, title formatting/truncation             |
+| `src/config.rs` | TOML config load + defaults                                |
+
+`command.rs` is the shared dispatch path used by *both* menu clicks and the
+URL scheme, so there is one place that knows how to turn `add <path>`,
+`toggle`, etc. into MPD operations.
+
+The concurrency split exists because `tray-icon`/`muda` need the `tao` event
+loop on the **main thread**, while `mpd_client` is async on **tokio**:
+
+1. The main thread runs the event loop and owns the tray icon and menu.
+2. A background tokio task holds the MPD connection and loops on `idle`,
+   getting pushed notifications when player/queue state changes.
+3. On each change it fetches song + status and sends them to the main thread
+   via an `EventLoopProxy`, along with a cheap clone of the `Client` — so the
+   main thread always holds a live handle to issue commands with, and no
+   separate command channel is needed.
+4. Commands (menu click or URL) clone that `Client` and run as tokio tasks, so
+   execution never blocks the event loop. If MPD is disconnected, the action
+   is a logged no-op rather than an error.
+
+The title and menu refresh **only when MPD state actually changes** —
+idle-driven, never polled.
 
 ## Requirements
 
@@ -83,6 +125,11 @@ mpdcontrol://add%20%22Album%2FPath%22
 implemented (`toggle`, `next`, `clear`, `add`) is shelled out to the system
 `mpc` binary verbatim, covering the long tail of MPD commands.
 
+> **Known trade-off (accepted):** this pass-through means *any* `mpdcontrol://`
+> link — including one embedded in a web page — can invoke any command,
+> including the `mpc` fallback. That's fine for a single-user personal tool;
+> it would need a verb allowlist if it ever became multi-user or web-exposed.
+
 ## Logging
 
 Logs to `~/Library/Logs/mpd-controller.log`. Default level is `info`;
@@ -92,3 +139,18 @@ e.g.:
 ```sh
 RUST_LOG=debug cargo run
 ```
+
+The log covers connection events, reconnect attempts, dispatched commands, and
+errors.
+
+## Tests
+
+```sh
+cargo test
+```
+
+Unit tests only, covering the pure bits that are easy to get wrong: URL decode
+→ tokenise → command parse, config loading and defaults, and menu display
+logic (title truncation, icon/state selection). There is no GUI or integration
+test harness — those paths were verified by hand (see
+[docs/implementation-details.md](docs/implementation-details.md)).
