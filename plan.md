@@ -5,8 +5,7 @@ mpd.rs → menu.rs → main.rs → command.rs → docs), per `AGENTS.md`'s
 personal-tool-sized scope: small steps, pure logic kept unit-testable, no
 speculative abstraction.
 
-**Status: steps 1–11 done. Next: step 12 (documentation) — the only step
-left.**
+**Status: steps 1–12 done. Feature branch complete — no step 13.**
 
 ## Steps 1–11 (done)
 
@@ -34,27 +33,21 @@ every checklist item that used to live in this file (playlist membership,
 album traversal, icons, paused indicator, resilience, and v1 regressions) —
 all confirmed working live against the real MPD server and library.
 
-## 12. Documentation
+## 12. Documentation (done)
 
-The only remaining step. Read-through only; no automated check.
-
-- [ ] `README.md` — document the new menu items (album nav, In playlists, Add
-      to), the `favourites` → `key_playlists` config change, icon glyphs.
-- [ ] `docs/future_expansions.md` — remove "Playlist membership + Add to",
+- [x] `README.md` — documented the new menu items (album nav, In playlists,
+      Add to), the `favourites` → `key_playlists` config change, icon
+      glyphs/paused indicator.
+- [x] `docs/future_expansions.md` — removed "Playlist membership + Add to",
       "Favourites action", "Album traversal", "In-memory library cache" from
       the deferred list.
-- [ ] `AGENTS.md` — add three gotchas to "Checking crate APIs" (all detailed
-      in spec.md §2.1, with rationale — don't re-derive, just port over):
-      the `mpc lsplaylists` duplication artifact, a single playlist listing
-      the same song twice (needs dedup, unlike the `lsplaylists` case), and
-      `Subsystem::Options` being where `random`/`repeat`/etc. changes are
-      reported (not `Player`). Also add the `listplaylist` hand-roll
-      (already implemented in `mpd.rs`) to the same section, parallel to the
-      existing `AddRecursive` note.
-- [ ] `docs/implementation-details.md` — optionally add a short note on the
+- [x] `AGENTS.md` — added the three gotchas from spec.md §2.1 (`mpc
+      lsplaylists` duplication, playlist-content dedup, `Subsystem::Options`
+      vs `Player`) plus the `listplaylist` hand-roll note parallel to
+      `AddRecursive`.
+- [x] `docs/implementation-details.md` — added a short note on the
       `PlayerSnapshot`/`PlaylistCache` split and why the merge lives in
-      `mpd.rs`, matching the file's existing "notes for humans" style. Not
-      required by the spec but keeps the file's stated purpose intact.
+      `mpd.rs`.
 
-**Verify:** Read-through only; no automated check. Once done, this feature
-branch is complete — no step 13.
+**Verify:** Read-through only; no automated check. Done — this feature
+branch is complete, no step 13.

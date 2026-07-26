@@ -22,9 +22,9 @@ MPD connection and any future in-memory state.
 | Module          | Responsibility                                            |
 |-----------------|-----------------------------------------------------------|
 | `src/main.rs`   | startup, `tao` event loop, tray icon + menu, URL handling  |
-| `src/mpd.rs`    | MPD connection, `idle` loop, reconnect/backoff, snapshots  |
+| `src/mpd.rs`    | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
 | `src/command.rs`| decoded command string → dispatch against MPD              |
-| `src/menu.rs`   | menu construction, title formatting/truncation             |
+| `src/menu.rs`   | pure menu model (album nav, playlist membership) + thin render, title formatting/truncation |
 | `src/config.rs` | TOML config load + defaults                                |
 
 `command.rs` is the shared dispatch path used by *both* menu clicks and the
@@ -92,24 +92,44 @@ defaults apply if the file, or individual fields, are missing:
 ```toml
 mpd_host = "localhost"    # default: localhost
 mpd_port = 6600           # default: 6600
-favourites = "Five stars" # reserved for a future menu feature; no effect yet
-key_playlists = [         # reserved for a future menu feature; no effect yet
+key_playlists = [         # default: empty — controls the "Add to" submenu, see below
   "Five stars",
   "My Top Rated",
+  "mellow_2024",
 ]
 ```
 
 If the file exists but fails to parse, the app fails to start rather than
-silently falling back to defaults.
+silently falling back to defaults. A `key_playlists` entry naming a playlist
+that doesn't exist in MPD is logged at `warn` and omitted from the menu.
 
 ## Using it
 
 The menu bar shows the current track as `Title - Artist` (truncated with a
 disabled full-text item in the dropdown when long), `♫` when connected but
 nothing is playing, or `🔇` when MPD is unreachable — the app keeps retrying
-with backoff and recovers automatically, no restart needed.
+with backoff and recovers automatically, no restart needed. When playback is
+paused, the title is prefixed with `⏸ ` (outside the truncation budget, so the
+track text truncates the same whether playing or paused).
 
-Dropdown menu: `Play/Pause`, `Next`, `Clear`, `Quit`.
+Dropdown menu, top to bottom:
+
+- `⏯ Play/Pause`, `⏭ Next`, `⏹ Clear`
+- Album navigation (only while inside a same-directory run of 5+ tracks and
+  `random` is off — see `docs/implementation-details.md`):
+  - `⏮⏮ Start of Album` on track 2+ of an album, or `⏮⏮ Prev Album: <name>` on
+    track 1
+  - `⏭⏭ Next Album: <name>`, omitted at the last album
+- The current track, disabled, shown only when its title was truncated
+- `In playlists ▶` — every playlist containing the current song, disabled
+  labels, informational only; omitted when the song is in none
+- `Add to ▶` — `key_playlists` minus any already containing the song; clicking
+  adds it via `playlistadd`; omitted when `key_playlists` is empty or already
+  covers the song
+- `Quit`
+
+Separators between sections are omitted when the section between them is
+empty.
 
 ### URL scheme
 

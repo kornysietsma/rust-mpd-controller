@@ -123,6 +123,29 @@ does work when running from a dev shell).
   menu from scratch on each event (`tray_icon.set_menu(...)`) is fine and
   simpler than mutating one in place. That's what `menu::build_menu` does.
 
+## `PlayerSnapshot` and `PlaylistCache` are separate, independently refreshed
+
+`mpd.rs` holds two caches, not one, because they change for different
+reasons and at very different costs:
+
+- `PlayerSnapshot` (status + current song + queue) — the queue is the
+  expensive part (2,734 tracks ≈ 2.2 MiB, ~342 ms to fetch), so it's only
+  refetched on `Subsystem::Queue`. `Subsystem::Player` and
+  `Subsystem::Options` refetch just status + current song and reuse the
+  cached queue — see the `Options` gotcha above.
+- `PlaylistCache` (song URL → playlist names, plus the raw playlist name
+  list) — reloaded in full on `Subsystem::StoredPlaylist`. MPD's event
+  doesn't say *which* playlist changed, and a full reload of all 45
+  playlists / ~12.4k entries is cheap enough not to bother tracking deltas.
+
+The merge lives in `mpd.rs`'s idle loop (`run_idle_loop`) rather than in
+`menu.rs`, because that's the one place already matching on `Subsystem` to
+decide what to refetch — `menu.rs` just receives both caches, reduced to
+plain primitives, and stays pure (see the `#[non_exhaustive]` note above).
+Reloading the playlist cache on `StoredPlaylist` also covers the app's own
+`playlistadd` writes, so an "Add to" click needs no manual cache patching —
+one mutation path that can't drift out of sync.
+
 ## Two different icons, don't conflate them
 
 - The **tray title is text-only** (`TrayIconBuilder::with_title`) — the track

@@ -38,6 +38,24 @@ Known gotchas already found this way, so you don't have to re-derive them:
 - `muda` items are `Rc<RefCell<...>>` internally, so it's fine to rebuild the
   whole tray menu from scratch each event (`tray_icon.set_menu(...)`) rather
   than mutating one in place.
+- `mpc lsplaylists` returns each playlist name **twice** (once bare, once with
+  `.m3u`) — it's also listing the playlist directory's files, an `mpc`
+  artifact. MPD's own `listplaylists` returns clean bare names, which is what
+  `mpd_client` sees. Don't add deduplication for this — there's nothing to
+  dedupe on the code side.
+- `mpd_client` 1.4.1 has no typed wrapper for `listplaylist <name>` (untagged
+  filenames only) — only the tagged, far larger `listplaylistinfo`. `mpd.rs`
+  hand-rolls it as a `RawCommand`, the same pattern as `command::AddRecursive`
+  wrapping `add`.
+- A single stored playlist **can** legitimately list the same song twice
+  (confirmed live: `Five stars.m3u` does, for Lorde's "Royals") — this one
+  *does* need dedup. Sort the playlist names per song, then `Vec::dedup()`
+  (adjacent-only, hence the sort first) when building membership.
+- MPD reports `random`/`repeat`/`single`/`consume`/crossfade/replay-gain
+  changes on `Subsystem::Options`, **not** `Player` — confirmed live when
+  toggling `random` mid-album-run had no effect on the menu until `Options`
+  was handled identically to `Player` (both just refetch `Status` +
+  `CurrentSong` and reuse the cached queue).
 
 ## Load-bearing oddities — don't "clean these up"
 
