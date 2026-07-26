@@ -176,11 +176,25 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
 
 /// Computes the tray display for a song that's playing/paused:
 /// the truncated track text, plus the untruncated text when truncation
-/// occurred so a disabled dropdown item can show it in full.
-pub fn track_display(title: Option<&str>, url: &str, artists: &[String]) -> Display {
+/// occurred so a disabled dropdown item can show it in full. When `state` is
+/// `Paused`, the paused glyph is prefixed onto `title` *after* truncation, so
+/// it sits outside the 25-char budget and never affects where the text is
+/// cut (spec §7.1). `full_text` (the untruncated dropdown text) never gets
+/// the prefix — it's not the tray title.
+pub fn track_display(
+    state: PlayState,
+    title: Option<&str>,
+    url: &str,
+    artists: &[String],
+) -> Display {
     let full = format_track(title, url, artists);
-    let title = truncate(&full, TITLE_MAX_CHARS);
-    let full_text = if title != full { Some(full) } else { None };
+    let truncated = truncate(&full, TITLE_MAX_CHARS);
+    let full_text = if truncated != full { Some(full) } else { None };
+    let title = if state == PlayState::Paused {
+        format!("{PAUSED_ICON} {truncated}")
+    } else {
+        truncated
+    };
     Display { title, full_text }
 }
 
@@ -204,7 +218,12 @@ pub fn disconnected_display() -> Display {
 /// song is playing/paused, the "nothing playing" icon otherwise.
 pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     match &snapshot.song {
-        Some(song) => track_display(song.title(), &song.url, song.artists()),
+        Some(song) => track_display(
+            snapshot.status.state,
+            song.title(),
+            &song.url,
+            song.artists(),
+        ),
         None => empty_queue_display(),
     }
 }
@@ -283,7 +302,8 @@ pub fn model(
     title: Option<&str>,
     artists: &[String],
 ) -> MenuModel {
-    let full_text = current.and_then(|entry| track_display(title, &entry.url, artists).full_text);
+    let full_text =
+        current.and_then(|entry| track_display(state, title, &entry.url, artists).full_text);
     let (prev_album, next_album) = album_nav(state, random, queue, current_pos);
 
     MenuModel {
@@ -303,8 +323,8 @@ const NEXT_ICON: &str = "\u{23ED}\u{FE0E}";
 const CLEAR_ICON: &str = "\u{23F9}\u{FE0E}";
 const PREV_ALBUM_ICON: &str = "\u{23EE}\u{FE0E}\u{23EE}\u{FE0E}";
 const NEXT_ALBUM_ICON: &str = "\u{23ED}\u{FE0E}\u{23ED}\u{FE0E}";
-/// Prefixed onto the tray title when paused — a `Display`/`track_display`
-/// concern (step 8), not used by `render` below.
+/// Prefixed onto the tray title when paused, by `track_display` above — a
+/// `Display` concern, not used by `render` below.
 const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
 
 /// The id for an album-navigation menu item (spec §8.2): `album:<song_id>`.
@@ -465,7 +485,7 @@ mod tests {
     #[test]
     fn track_display_shows_full_text_untruncated_when_short() {
         let artists = vec!["My Artist".to_string()];
-        let display = track_display(Some("My Title"), "foo.mp3", &artists);
+        let display = track_display(PlayState::Playing, Some("My Title"), "foo.mp3", &artists);
         assert_eq!(display.title, "My Title - My Artist");
         assert!(display.full_text.is_none());
     }
@@ -473,9 +493,46 @@ mod tests {
     #[test]
     fn track_display_truncates_and_exposes_full_text() {
         let long_title = "a".repeat(40);
-        let display = track_display(Some(&long_title), "foo.mp3", &[]);
+        let display = track_display(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
         assert_eq!(display.title.chars().count(), TITLE_MAX_CHARS);
         assert_eq!(display.full_text.as_deref(), Some(long_title.as_str()));
+    }
+
+    #[test]
+    fn track_display_prefixes_paused_glyph_when_paused() {
+        let display = track_display(PlayState::Paused, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(display.title, format!("{PAUSED_ICON} My Title"));
+    }
+
+    #[test]
+    fn track_display_omits_paused_glyph_when_playing_or_stopped() {
+        let playing = track_display(PlayState::Playing, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(playing.title, "My Title");
+        let stopped = track_display(PlayState::Stopped, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(stopped.title, "My Title");
+    }
+
+    #[test]
+    fn track_display_paused_prefix_sits_outside_the_truncation_budget() {
+        // A title that exactly fills the 25-char budget must truncate
+        // identically whether paused or playing (spec §7.1) — the glyph is
+        // prepended after truncation, so it doesn't eat into the budget.
+        let title = "a".repeat(TITLE_MAX_CHARS);
+        let playing = track_display(PlayState::Playing, Some(&title), "foo.mp3", &[]);
+        let paused = track_display(PlayState::Paused, Some(&title), "foo.mp3", &[]);
+        assert_eq!(playing.title, title);
+        assert_eq!(paused.title, format!("{PAUSED_ICON} {title}"));
+        assert!(playing.full_text.is_none());
+        assert!(paused.full_text.is_none());
+    }
+
+    #[test]
+    fn track_display_long_title_truncates_identically_paused_or_playing() {
+        let long_title = "a".repeat(40);
+        let playing = track_display(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
+        let paused = track_display(PlayState::Paused, Some(&long_title), "foo.mp3", &[]);
+        assert_eq!(paused.title, format!("{PAUSED_ICON} {}", playing.title));
+        assert_eq!(playing.full_text, paused.full_text);
     }
 
     #[test]

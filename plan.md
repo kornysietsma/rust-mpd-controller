@@ -9,7 +9,7 @@ Progress is tracked via the checkboxes below. No fixed commit-per-step rule —
 commit at your discretion. A consolidated manual QA pass against the live MPD
 server closes out the work (§ at the end of this file).
 
-**Status: steps 1–7 done. Next: step 8 (paused indicator).**
+**Status: steps 1–8 done. Next: step 9 (`command.rs` new command functions).**
 
 ## 0. Technical context and decisions
 
@@ -143,17 +143,22 @@ passing.
 Separate from the `MenuModel` work — this only touches the tray-title
 `Display` path (`track_display` / `display_for_snapshot`), not the dropdown.
 
-- [ ] Add the paused glyph constant (spec §7): `PAUSED_ICON` already exists
+- [x] Add the paused glyph constant (spec §7): `PAUSED_ICON` already exists
       in `menu.rs` (added in step 7, currently unused) — use it here.
-- [ ] Prefix `⏸ ` outside the existing 25-char truncation budget, only when
-      `status.state == PlayState::Paused`.
-- [ ] `Stopped` and `Playing` unchanged.
+- [x] Prefix `⏸ ` outside the existing 25-char truncation budget, only when
+      `status.state == PlayState::Paused`. Implemented by widening
+      `track_display`'s signature to take a `state: PlayState` param (asked
+      the user; confirmed over keeping `track_display` state-free with a
+      separate wrapper, or inlining the prefix only in
+      `display_for_snapshot`) — prefixes `truncated`, not `full`, so the
+      dropdown's untruncated `full_text` never carries the glyph.
+- [x] `Stopped` and `Playing` unchanged.
 
 Tests (spec §9 "Paused indicator"):
-- [ ] `Paused` prefixes the glyph; `Playing`/`Stopped` do not
-- [ ] the prefix doesn't consume the 25-char budget (a title that exactly
+- [x] `Paused` prefixes the glyph; `Playing`/`Stopped` do not
+- [x] the prefix doesn't consume the 25-char budget (a title that exactly
       fills 25 chars truncates identically paused vs. playing)
-- [ ] a long title truncates to the same text whether paused or playing
+- [x] a long title truncates to the same text whether paused or playing
       (only the prefix differs)
 
 **Verify:** `cargo test menu::`. Manual QA: pause playback, confirm `⏸`
