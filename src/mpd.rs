@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use mpd_client::client::{Client, ConnectionEvent, ConnectionEvents, Subsystem};
 use mpd_client::commands::{
     Command as MpdCommand, CurrentSong, GetPlaylists, Queue, Status as StatusCommand,
@@ -141,7 +141,11 @@ async fn run_idle_loop(
                         Err(e) => warn!("failed to refetch MPD queue after change: {e:#}"),
                     }
                 }
-                Subsystem::Player => {
+                // `Options` fires on `random`/`repeat`/etc. toggles (MPD's
+                // `random` lives in `Status`, not the queue or song) — found
+                // live: without this, album nav didn't hide when `random`
+                // was enabled mid-album, since nothing triggered a rebuild.
+                Subsystem::Player | Subsystem::Options => {
                     if let Err(e) =
                         publish_player_snapshot(client, queue, playlist_cache, on_event).await
                     {
@@ -184,10 +188,13 @@ async fn fetch_queue(client: &Client) -> Result<Vec<SongInQueue>> {
 }
 
 /// Loads the full playlist membership cache: all playlist names, then the
-/// (untagged) contents of each, folded into a `url -> sorted playlist names`
-/// map. Does **not** deduplicate the playlist name list — unlike `mpc
-/// lsplaylists`, MPD's own `listplaylists` (what `GetPlaylists` sends)
-/// already returns each playlist once.
+/// (untagged) contents of each, folded into a `url -> sorted, deduplicated
+/// playlist names` map. The top-level playlist *name* list itself needs no
+/// dedup — unlike `mpc lsplaylists`, MPD's own `listplaylists` (what
+/// `GetPlaylists` sends) already returns each playlist once — but a single
+/// playlist's *contents* can legitimately list the same song twice (found
+/// live in `Five stars.m3u`), which would otherwise push that playlist's
+/// name into one song's membership entry more than once.
 ///
 /// Also validates `key_playlists` against the names MPD actually returned,
 /// warning on any that don't resolve (spec §3) — the "Add to" submenu omits
@@ -220,7 +227,13 @@ async fn load_playlist_cache(client: &Client, key_playlists: &[String]) -> Resul
         }
     }
     for entries in membership.values_mut() {
+        // A playlist can legitimately list the same song more than once
+        // (confirmed live: `Five stars.m3u` does); `dedup()` after `sort()`
+        // collapses that back down to one entry per playlist, matching "In
+        // playlists" listing each playlist that contains the song, not each
+        // time it appears in it.
         entries.sort();
+        entries.dedup();
     }
     Ok(PlaylistCache { membership, names })
 }
@@ -248,6 +261,7 @@ async fn publish_full_snapshot(
 ) -> Result<Vec<SongInQueue>> {
     let (status, song) = fetch_status_and_song(client).await?;
     let queue = fetch_queue(client).await?;
+    debug!("refetched queue ({} tracks)", queue.len());
     on_event(MpdEvent::Connected(
         Box::new(PlayerSnapshot {
             status,
@@ -270,6 +284,7 @@ async fn publish_player_snapshot(
     on_event: &impl Fn(MpdEvent),
 ) -> Result<()> {
     let (status, song) = fetch_status_and_song(client).await?;
+    debug!("reused cached queue ({} tracks)", queue.len());
     on_event(MpdEvent::Connected(
         Box::new(PlayerSnapshot {
             status,
@@ -294,6 +309,11 @@ async fn publish_playlist_snapshot(
 ) -> Result<PlaylistCache> {
     let (status, song) = fetch_status_and_song(client).await?;
     let playlist_cache = load_playlist_cache_or_warn(client, key_playlists).await;
+    debug!(
+        "reloaded playlist cache ({} playlists), reused cached queue ({} tracks)",
+        playlist_cache.names.len(),
+        queue.len()
+    );
     on_event(MpdEvent::Connected(
         Box::new(PlayerSnapshot {
             status,

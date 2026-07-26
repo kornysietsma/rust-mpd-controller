@@ -63,6 +63,12 @@ playlists (4–18%).
 - All multi-disc albums in this library live in a **single directory** with
   track numbers running continuously across discs. There are no `CD1/`/`CD2/`
   subdirectories, so directory-based album grouping handles them correctly.
+- **A playlist can list the same song twice** — `Five stars.m3u` does, for
+  Lorde's "Royals" (confirmed live, not a measurement artifact). Unlike the
+  `lsplaylists` gotcha above, this one *does* need deduplication — see §4.2.
+- **MPD reports `random`/`repeat`/etc. changes on `Subsystem::Options`, not
+  `Player`** — found live when toggling `random` mid-album-run had no effect
+  until `Options` was handled (§4.1).
 
 ## 3. Configuration changes
 
@@ -79,8 +85,10 @@ key_playlists = ["Five stars", "My Top Rated", "mellow_2024"]
   keys by default, so an existing config still containing `favourites` will
   load without error.
 - `key_playlists` keeps its current type (`Vec<String>`) and default (empty).
-- No config file currently exists on this machine — defaults must remain
-  usable, which means an empty `key_playlists` is a normal state (§5.5).
+- Defaults must remain usable on a machine with no config file at all
+  (true when this spec was written; a config now exists on this dev machine
+  from manual QA), which means an empty `key_playlists` is a normal state —
+  the "Add to" submenu is simply omitted (§6.2).
 - Names in `key_playlists` that don't exist in MPD are logged at `warn` on
   cache load and omitted from the "Add to" submenu.
 
@@ -99,11 +107,19 @@ tracks = 2.2 MiB, ~342 ms), it is **not** refetched on every event:
 | On connect | fetch `Status`, `CurrentSong`, `Queue` |
 | `Subsystem::Queue` | refetch all three |
 | `Subsystem::Player` | refetch `Status` + `CurrentSong` only; **reuse cached queue** |
+| `Subsystem::Options` | same as `Subsystem::Player` |
 | `Subsystem::StoredPlaylist` | reload playlist cache only (§4.2) |
 | Disconnect | drop both caches |
 
 Queue *contents* only change on `Subsystem::Queue`; Player events change only
 position and play state. This keeps track changes free.
+
+**`Subsystem::Options` is required, not optional**: MPD reports `random`
+(and `repeat`/`single`/`consume`/crossfade/replay-gain) changes on `Options`,
+*not* `Player` — confirmed live when toggling `random` mid-album-run had no
+effect on the menu until `Options` was handled identically to `Player`. Both
+just refetch `Status`+`CurrentSong` and reuse the cached queue, since `random`
+lives in `Status`.
 
 ### 4.2 Playlist cache
 
@@ -112,17 +128,22 @@ position and play state. This keeps track changes free.
   of 45 playlists / 12.4k entries is cheap.
 - Use `listplaylist` (filenames only), **not** `listplaylistinfo` — membership
   needs only file URLs, and the tagged variant is far larger.
-- Structure: `HashMap<String, Vec<String>>` mapping song URL → sorted playlist
-  names.
+- Structure: `HashMap<String, Vec<String>>` mapping song URL → sorted,
+  **deduplicated** playlist names.
+- A single playlist can legitimately list the same song more than once —
+  confirmed live: `Five stars.m3u` lists Lorde's "Royals" twice. Without
+  dedup, "In playlists" showed that playlist's name twice for that song.
+  Sort, then `Vec::dedup()` (which only removes *adjacent* duplicates, hence
+  the sort first) when building each song's membership entry.
 - Reloading on `StoredPlaylist` also covers our own writes, so an "Add to"
   click needs **no manual cache patching** — one mutation path, which cannot
   drift out of sync and cannot desync when an MPD write fails.
 - A failure to load the cache is logged at `warn`; the menu then renders with
   empty membership rather than failing.
 
-`mpd.rs` currently filters events with
-`matches!(subsystem, Subsystem::Player | Subsystem::Queue)` — extend this to
-include `Subsystem::StoredPlaylist`.
+`mpd.rs`'s idle-loop event handler matches on `Subsystem::Queue`,
+`Subsystem::Player`, `Subsystem::Options` (§4.1), and `Subsystem::StoredPlaylist`;
+every other subsystem is ignored.
 
 ## 5. Album traversal
 
@@ -312,6 +333,14 @@ glyph and a space:
   (preserving current behaviour); `Playing` is unchanged.
 - The empty-queue and disconnected displays are unaffected.
 
+Implementation: `track_display` gains a `state: PlayState` parameter (the
+prefix is applied to the already-truncated title *inside* `track_display`,
+after truncation) rather than adding a separate wrapper function — this
+keeps the whole "format, truncate, prefix" sequence in one pure,
+primitive-only function that stays directly unit-testable. `full_text` (the
+untruncated text used by the disabled dropdown row, unrelated to the tray
+title) never gets the prefix.
+
 ## 8. Code structure
 
 ### 8.1 `menu.rs` — pure model, thin render
@@ -396,9 +425,13 @@ before the fallthrough:
 }
 ```
 
-State held across events grows from `play_state` to also include the cached
-queue, the playlist cache, and the current song URL — needed so a click can act
-on what the menu was built from.
+State held across events grows from `play_state` to also include the current
+song's URL (`current_url: Option<String>`), needed so an `addto:` click can
+act on the song the menu was built from. **Not** the cached queue or
+playlist cache — `album:<id>` needs no queue lookup (the id already names
+the target `SongId` directly, which is the whole point of using `SongId`
+over `SongPosition`, §5.4), and nothing else in dispatch reads either
+cache. Holding them anyway would be unread state.
 
 ### 8.4 `command.rs`
 
@@ -479,8 +512,11 @@ All of these run without a live MPD connection.
 - `docs/future_expansions.md` — remove "Playlist membership + Add to",
   "Favourites action", "Album traversal", and "In-memory library cache" from
   the deferred list; they are now built.
-- `AGENTS.md` — add the `mpc lsplaylists` duplication artifact (§2.1) to the
-  "Checking crate APIs" gotchas, so it isn't rediscovered.
+- `AGENTS.md` — add three gotchas (§2.1) to the "Checking crate APIs"
+  section, so none is rediscovered: the `mpc lsplaylists` duplication
+  artifact, a single playlist listing the same song twice (needs dedup,
+  unlike the `lsplaylists` case), and `Subsystem::Options` being where
+  `random`/`repeat`/etc. changes are reported (not `Player`).
 
 ## 11. Out of scope
 
