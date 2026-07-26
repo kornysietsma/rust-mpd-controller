@@ -121,9 +121,12 @@ fn main() -> Result<()> {
                     *control_flow = ControlFlow::Exit;
                 } else if menu_event.id == menu::PLAY_PAUSE_ID {
                     let state = play_state;
-                    spawn_command(&runtime, &current_client, "toggle play/pause", move |c| {
-                        async move { command::toggle(&c, state).await }
-                    });
+                    spawn_command(
+                        &runtime,
+                        &current_client,
+                        "toggle play/pause",
+                        move |c| async move { command::toggle(&c, state).await },
+                    );
                 } else if menu_event.id == menu::NEXT_ID {
                     spawn_command(&runtime, &current_client, "next", |c| async move {
                         command::next(&c).await

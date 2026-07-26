@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, anyhow};
+use log::info;
 use mpd_client::client::Client;
 use mpd_client::commands::{ClearQueue, Command as MpdCommand, Next, Play, SetPause};
 use mpd_client::protocol::command::Command as RawCommand;
 use mpd_client::protocol::response::Frame;
 use mpd_client::responses::{PlayState, TypedResponseError};
+use tokio::process::Command as TokioCommand;
 
 /// Toggles playback: pauses if playing, resumes if paused, starts playback
 /// from the current position if stopped. MPD's `pause` command takes an
@@ -143,6 +145,53 @@ pub async fn dispatch(
     }
 }
 
+/// Shells out to the system `mpc` binary for commands `dispatch` doesn't
+/// recognize natively (spec §7/§8), covering the long tail of MPD commands
+/// without reimplementing each one. Tokens are passed straight through as
+/// `argv` entries (not via a shell), so no quoting/escaping is needed here —
+/// this is the "verbatim" pass-through the spec describes.
+///
+/// An empty token list (e.g. empty decoded input) is treated as a no-op
+/// rather than invoking bare `mpc`, which would otherwise just print MPD's
+/// current status as an unintended side effect.
+async fn run_mpc_fallback(tokens: &[String]) -> Result<()> {
+    if tokens.is_empty() {
+        info!("mpc fallback: nothing to dispatch (empty command), skipping");
+        return Ok(());
+    }
+
+    info!("dispatching to mpc fallback: {tokens:?}");
+    let output = TokioCommand::new("mpc")
+        .args(tokens)
+        .output()
+        .await
+        .context("failed to run mpc")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "mpc exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+/// The full command path (spec §7/§8): tries native dispatch first, falling
+/// back to `mpc` for anything unrecognized. This is the entry point the URL
+/// scheme (step 9) is expected to call.
+pub async fn dispatch_or_fallback(
+    client: &Client,
+    current_state: PlayState,
+    input: &str,
+) -> Result<()> {
+    match dispatch(client, current_state, input).await? {
+        DispatchOutcome::Handled => Ok(()),
+        DispatchOutcome::Unrecognized(tokens) => run_mpc_fallback(&tokens).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +260,12 @@ mod tests {
     #[test]
     fn parse_reports_empty_input_as_unrecognized() {
         assert_eq!(parse("").unwrap(), ParsedCommand::Unrecognized(vec![]));
+    }
+
+    #[tokio::test]
+    async fn mpc_fallback_skips_invocation_for_empty_tokens() {
+        // No `mpc` binary needs to exist for this to pass: an empty token
+        // list returns early rather than shelling out.
+        assert!(run_mpc_fallback(&[]).await.is_ok());
     }
 }

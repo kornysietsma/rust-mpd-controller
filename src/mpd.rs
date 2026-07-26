@@ -70,7 +70,9 @@ async fn connect(config: &Config) -> Result<(Client, ConnectionEvents)> {
             )
         })?;
 
-    Client::connect(stream).await.context("MPD handshake failed")
+    Client::connect(stream)
+        .await
+        .context("MPD handshake failed")
 }
 
 async fn run_idle_loop(
