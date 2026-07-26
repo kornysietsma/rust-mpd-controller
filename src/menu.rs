@@ -52,6 +52,90 @@ fn album_run(queue: &[QueueEntry], current_pos: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
+/// Whether album-nav rows should be shown at all (spec §5.3): only while not
+/// in `random` mode and only when sitting inside a run of at least 5. The
+/// "nothing playing / stopped" case isn't this function's concern — the
+/// caller only calls it when there's a current position to evaluate.
+fn show_album_nav(random: bool, run_len: usize) -> bool {
+    !random && run_len >= ALBUM_NAV_MIN_RUN
+}
+
+const ALBUM_NAV_MIN_RUN: usize = 5;
+const ALBUM_NAME_MAX_CHARS: usize = 40;
+
+/// An album-navigation jump target (spec §5.4): the song to land on, and the
+/// full menu label describing the destination (e.g. `"Next Album: Let It
+/// Be"` or `"Start of Album"`). `render()` and click dispatch need no
+/// further knowledge of which case produced it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AlbumJump {
+    pub label: String,
+    pub song_id: u64,
+}
+
+/// The basename of a song's parent directory — the fallback album display
+/// name when the `album` tag is absent (spec §5.2). `None` for a
+/// library-root file with no parent directory.
+fn directory_basename(url: &str) -> Option<&str> {
+    let dir = album_key(url)?;
+    Some(dir.rsplit('/').next().unwrap_or(dir))
+}
+
+/// The display name for the album a queue entry belongs to: its `album` tag,
+/// falling back to the parent directory's basename, then to the raw URL if
+/// even that's unavailable (a library-root file). Truncated to 40 chars
+/// (spec §5.2) — applied to the name only, so a long title never pushes the
+/// `Next Album: ` prefix off the menu.
+fn album_display_name(entry: &QueueEntry) -> String {
+    let name = entry
+        .album
+        .clone()
+        .or_else(|| directory_basename(&entry.url).map(str::to_string))
+        .unwrap_or_else(|| entry.url.clone());
+    truncate(&name, ALBUM_NAME_MAX_CHARS)
+}
+
+/// Next-album target (spec §5.4): the run immediately following the current
+/// one, if any. `None` when there's no current run (empty/out-of-bounds
+/// queue position) or the current run is the last one.
+fn next_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump> {
+    let (_, end) = album_run(queue, current_pos)?;
+    let entry = queue.get(end + 1)?;
+    Some(AlbumJump {
+        label: format!("Next Album: {}", album_display_name(entry)),
+        song_id: entry.id,
+    })
+}
+
+/// Prev/Start-of-Album target (spec §5.4): two states depending on where
+/// `current_pos` sits within its run.
+/// - Track 2+ (`current_pos > run_start`): jump to the run's own first
+///   entry, labelled `"Start of Album"` (no name — the run is already
+///   playing, so a name would be redundant).
+/// - Track 1 (`current_pos == run_start`): jump to the *preceding* run's
+///   first entry, labelled `"Prev Album: <name>"`. `None` if there is no
+///   preceding run (this is the first album in the queue).
+fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump> {
+    let (start, _) = album_run(queue, current_pos)?;
+    if current_pos > start {
+        let entry = &queue[start];
+        return Some(AlbumJump {
+            label: "Start of Album".to_string(),
+            song_id: entry.id,
+        });
+    }
+
+    if start == 0 {
+        return None;
+    }
+    let (prev_start, _) = album_run(queue, start - 1)?;
+    let entry = &queue[prev_start];
+    Some(AlbumJump {
+        label: format!("Prev Album: {}", album_display_name(entry)),
+        song_id: entry.id,
+    })
+}
+
 const EMPTY_QUEUE_ICON: &str = "♫";
 const DISCONNECTED_ICON: &str = "🔇";
 const TITLE_MAX_CHARS: usize = 25;
@@ -322,5 +406,157 @@ mod tests {
     fn album_run_out_of_bounds_position_is_none() {
         let queue = vec![entry("A/Al/1.mp3"), entry("A/Al/2.mp3")];
         assert_eq!(album_run(&queue, 5), None);
+    }
+
+    fn queue_entry(url: &str, album: Option<&str>, id: u64) -> QueueEntry {
+        QueueEntry {
+            url: url.to_string(),
+            album: album.map(str::to_string),
+            id,
+        }
+    }
+
+    #[test]
+    fn show_album_nav_run_of_five_shown_run_of_four_hidden() {
+        assert!(show_album_nav(false, 5));
+        assert!(!show_album_nav(false, 4));
+    }
+
+    #[test]
+    fn show_album_nav_hidden_when_random_regardless_of_run_len() {
+        assert!(!show_album_nav(true, 100));
+    }
+
+    #[test]
+    fn album_display_name_uses_album_tag() {
+        let entry = queue_entry("Beatles/Abbey Road/1.mp3", Some("Abbey Road"), 1);
+        assert_eq!(album_display_name(&entry), "Abbey Road");
+    }
+
+    #[test]
+    fn album_display_name_falls_back_to_directory_basename() {
+        let entry = queue_entry("Beatles/Abbey Road/1.mp3", None, 1);
+        assert_eq!(album_display_name(&entry), "Abbey Road");
+    }
+
+    #[test]
+    fn album_display_name_truncates_long_title() {
+        let long_title = "a".repeat(192);
+        let entry = queue_entry("Beatles/Abbey Road/1.mp3", Some(&long_title), 1);
+        assert_eq!(album_display_name(&entry).chars().count(), 40);
+    }
+
+    #[test]
+    fn next_album_jump_returns_run_first_entry() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+            queue_entry("A/Let It Be/1.mp3", Some("Let It Be"), 3),
+            queue_entry("A/Let It Be/2.mp3", Some("Let It Be"), 4),
+        ];
+        let jump = next_album_jump(&queue, 0).unwrap();
+        assert_eq!(jump.song_id, 3);
+        assert_eq!(jump.label, "Next Album: Let It Be");
+    }
+
+    #[test]
+    fn next_album_jump_at_last_album_is_none() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+        ];
+        assert_eq!(next_album_jump(&queue, 0), None);
+    }
+
+    #[test]
+    fn prev_album_jump_on_track_one_returns_preceding_run_labelled() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+            queue_entry("A/Let It Be/1.mp3", Some("Let It Be"), 3),
+            queue_entry("A/Let It Be/2.mp3", Some("Let It Be"), 4),
+        ];
+        // Position 2 is track 1 of the "Let It Be" run.
+        let jump = prev_album_jump(&queue, 2).unwrap();
+        assert_eq!(jump.song_id, 1);
+        assert_eq!(jump.label, "Prev Album: Abbey Road");
+    }
+
+    #[test]
+    fn prev_album_jump_on_track_two_returns_start_of_album() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+            queue_entry("A/Abbey Road/3.mp3", Some("Abbey Road"), 3),
+        ];
+        let jump = prev_album_jump(&queue, 1).unwrap();
+        assert_eq!(jump.song_id, 1);
+        assert_eq!(jump.label, "Start of Album");
+    }
+
+    #[test]
+    fn prev_album_jump_on_last_track_of_run_still_returns_start_of_album() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+            queue_entry("A/Abbey Road/3.mp3", Some("Abbey Road"), 3),
+        ];
+        let jump = prev_album_jump(&queue, 2).unwrap();
+        assert_eq!(jump.song_id, 1);
+        assert_eq!(jump.label, "Start of Album");
+    }
+
+    #[test]
+    fn prev_album_jump_two_clicks_reaches_previous_album() {
+        let queue = vec![
+            queue_entry("A/Please Please Me/1.mp3", Some("Please Please Me"), 1),
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 2),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 3),
+            queue_entry("A/Abbey Road/3.mp3", Some("Abbey Road"), 4),
+            queue_entry("A/Abbey Road/4.mp3", Some("Abbey Road"), 5),
+            queue_entry("A/Abbey Road/5.mp3", Some("Abbey Road"), 6),
+        ];
+        // First click from track 5 (pos 5) lands on track 1 (pos 1, id 2).
+        let first = prev_album_jump(&queue, 5).unwrap();
+        assert_eq!(first.song_id, 2);
+        assert_eq!(first.label, "Start of Album");
+
+        // Second click, now positioned at track 1, reaches the previous album.
+        let second = prev_album_jump(&queue, 1).unwrap();
+        assert_eq!(second.song_id, 1);
+        assert_eq!(second.label, "Prev Album: Please Please Me");
+    }
+
+    #[test]
+    fn prev_album_jump_at_track_one_of_first_album_is_none() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+        ];
+        assert_eq!(prev_album_jump(&queue, 0), None);
+    }
+
+    #[test]
+    fn prev_album_jump_at_track_two_of_first_album_offers_start_of_album() {
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+        ];
+        let jump = prev_album_jump(&queue, 1).unwrap();
+        assert_eq!(jump.song_id, 1);
+        assert_eq!(jump.label, "Start of Album");
+    }
+
+    #[test]
+    fn traversal_never_wraps_regardless_of_repeat() {
+        // Neither traversal function takes a `repeat` parameter — there's
+        // nothing to consult, so wraparound can't happen no matter MPD's
+        // repeat setting.
+        let queue = vec![
+            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+        ];
+        assert_eq!(next_album_jump(&queue, 1), None);
+        assert_eq!(prev_album_jump(&queue, 0), None);
     }
 }

@@ -246,42 +246,54 @@ call them. `cargo test` full suite: 43/43 passing.
 
 ## 5. `menu.rs` — pure model, part 2: visibility and traversal
 
-- [ ] `show_album_nav(random: bool, run_len: usize) -> bool` implementing
+- [x] `show_album_nav(random: bool, run_len: usize) -> bool` implementing
       spec §5.3 (`!random && run_len >= 5`).
-  - [ ] test: run of 5 → shown; run of 4 → hidden
-  - [ ] test: `random = true` → hidden regardless of run length
-  - [ ] test: stopped / no current song → hidden (via the caller passing
-        `None` for `current`, not inside this function)
-- [ ] `QueueEntry` and `AlbumJump` structs (spec §8.1).
-- [ ] Traversal functions implementing spec §5.4 — next-album target, and
+  - [x] test: run of 5 → shown; run of 4 → hidden
+  - [x] test: `random = true` → hidden regardless of run length
+  - [x] test: stopped / no current song → hidden (via the caller passing
+        `None` for `current`, not inside this function) — deferred to step
+        6's `model()` assembly tests, per this checkbox's own note; nothing
+        to test in `show_album_nav` itself.
+- [x] `QueueEntry` and `AlbumJump` structs (spec §8.1). `QueueEntry` landed a
+      step early (step 4); `AlbumJump` added here, deriving `Debug`/`PartialEq`
+      so tests can `assert_eq!` against `None`.
+- [x] Traversal functions implementing spec §5.4 — next-album target, and
       the two-state prev/start-of-album target. Both share the `AlbumJump`
       shape; keep them as one function returning `Option<AlbumJump>` per
       direction so `model()` stays a straight assembly of the two calls.
-  - [ ] test: next album returns the run's first entry
-  - [ ] test: on track 1, prev returns the preceding run's first entry,
+  - [x] test: next album returns the run's first entry
+  - [x] test: on track 1, prev returns the preceding run's first entry,
         labelled `Prev Album: <name>`
-  - [ ] test: on track 2, prev returns the current run's first entry,
+  - [x] test: on track 2, prev returns the current run's first entry,
         labelled `Start of Album`
-  - [ ] test: on the last track of a run, prev still returns the current
+  - [x] test: on the last track of a run, prev still returns the current
         run's first entry
-  - [ ] test: two clicks from track 5 of an album — first call lands on
+  - [x] test: two clicks from track 5 of an album — first call lands on
         track 1 (`Start of Album`), a second call (now with `current_pos`
         pointing at track 1) lands on the previous album
-  - [ ] test: track 1 of the first album → no prev item
-  - [ ] test: track 2+ of the first album → `Start of Album` still offered
-  - [ ] test: last album → no next item
-  - [ ] test: `repeat` set → still no wraparound (traversal ignores
-        `repeat` entirely; test pins that it's not consulted)
-- [ ] Album label: name from the target run's first track's `album` tag,
+  - [x] test: track 1 of the first album → no prev item
+  - [x] test: track 2+ of the first album → `Start of Album` still offered
+  - [x] test: last album → no next item
+  - [x] test: `repeat` set → still no wraparound (traversal ignores
+        `repeat` entirely; test pins that it's not consulted — neither
+        function even takes a `repeat` parameter)
+- [x] Album label: name from the target run's first track's `album` tag,
       falling back to the directory basename; `truncate(name, 40)` applied to
       the name only, not the `Next Album: ` prefix (spec §5.2).
-  - [ ] test: name taken from the target run's first track
-  - [ ] test: falls back to directory basename when `album` tag absent
-  - [ ] test: 192-char title truncates to 40 chars without panicking
+  - [x] test: name taken from the target run's first track
+  - [x] test: falls back to directory basename when `album` tag absent
+  - [x] test: 192-char title truncates to 40 chars without panicking
 
-**Verify:** `cargo test menu::`. This is where the bulk of spec §9's
-"Traversal targets" and "Album labels" sections land — exhaustively unit
-tested, no live MPD needed.
+`AlbumJump.label` holds the *full* row text (e.g. `"Prev Album: Abbey
+Road"`, or literally `"Start of Album"`), not just the album name — the
+40-char truncation applies only to the name substring inside it. This is
+what lets `render()` (step 7) stay a pure "prepend the icon" operation with
+no branching on which of the two prev-states produced the jump.
+
+**Verify:** `cargo test menu::` — 14 new tests, all passing (36/36 in the
+module, 57/57 full suite). `cargo build`/`clippy --all-targets` clean apart
+from the same expected transient `dead_code` pattern, now also covering this
+step's new functions/structs — resolves once step 6's `model()` calls them.
 
 ## 6. `menu.rs` — pure model, part 3: playlist membership and `model()` assembly
 
