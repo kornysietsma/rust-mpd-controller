@@ -9,7 +9,7 @@ Progress is tracked via the checkboxes below. No fixed commit-per-step rule —
 commit at your discretion. A consolidated manual QA pass against the live MPD
 server closes out the work (§ at the end of this file).
 
-**Status: steps 1–9 done. Next: step 10 (`main.rs` state and dispatch).**
+**Status: steps 1–10 done. Next: step 11 (documentation).**
 
 ## 0. Technical context and decisions
 
@@ -187,26 +187,26 @@ already wired** (step 7) — `queue_entries()`, `current_pos`,
 `playlists_for_url`, and the `menu::model()`/`menu::render()` call site all
 exist and work today. What's left is specifically about *dispatch*:
 
-- [ ] Widen held state: alongside `play_state`, keep the last
-      `PlayerSnapshot` (for its queue) and last `PlaylistCache`, plus the
-      current song's URL — needed so a click on `album:`/`addto:` (which
-      arrives as its own event, independent of any fresh `MpdEvent`) can act
-      on the data the menu was actually built from.
-- [ ] Filter `key_playlists` against `PlaylistCache::names` before calling
-      `menu::model(...)` (spec §3 / §0.1 above) — currently the raw config
-      list is passed through unfiltered, so a typo'd entry still shows up in
-      "Add to" even though it's already logged as a `warn`.
-- [ ] Add the two dispatch branches (spec §8.3), using `command::play_song`/
-      `command::add_to_playlist` (step 9):
-  ```rust
-  } else if let Some(rest) = menu_event.id.0.strip_prefix("album:") {
-      // parse rest as u64 -> SongId, spawn_command(... command::play_song ...)
-  } else if let Some(name) = menu_event.id.0.strip_prefix("addto:") {
-      // spawn_command(... command::add_to_playlist(&c, name, &current_url) ...)
-  }
-  ```
-  Malformed `album:` ids (parse failure) are logged and dropped, not
-  panicked on.
+- [x] Widen held state: added `current_url: Option<String>` alongside
+      `play_state`/`current_client`, updated on `Connected`/`Disconnected`.
+      **Narrower than the original draft above** — asked the user; decided
+      *not* to also hold the last `PlayerSnapshot`/`PlaylistCache`, since
+      nothing in dispatch actually reads them: `album:<id>` only needs to
+      parse the id (the id already names the target `SongId` directly, no
+      queue lookup needed — that's the whole point of using `SongId` over
+      `SongPosition`, spec §5.4), and `addto:<name>` only needs the current
+      song's URL. Holding the full snapshot/cache would be unread state,
+      against `AGENTS.md`'s no-speculative-complexity stance.
+- [x] Filter `key_playlists` against `PlaylistCache::names` before calling
+      `menu::model(...)` (spec §3 / §0.1 above) — `known_key_playlists` is
+      computed in the `Connected` arm and passed instead of the raw
+      `key_playlists` config list. The `warn` on an unresolvable name already
+      happens in `mpd.rs::load_playlist_cache`; this only adds the filtering.
+- [x] Add the two dispatch branches (spec §8.3), using `command::play_song`/
+      `command::add_to_playlist` (step 9). Malformed `album:` ids (parse
+      failure) are logged and dropped, not panicked on; an `addto:` click
+      with no `current_url` (nothing playing) is likewise logged and
+      dropped.
 
 **Verify:**
 - `cargo test` (full suite) + `cargo clippy` clean.

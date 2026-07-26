@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use log::{debug, info, warn};
 use mpd_client::client::Client;
+use mpd_client::commands::SongId;
 use mpd_client::responses::{PlayState, SongInQueue};
 use percent_encoding::percent_decode_str;
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
@@ -167,6 +168,10 @@ fn main() -> Result<()> {
 
     let mut current_client: Option<Client> = None;
     let mut play_state = PlayState::Stopped;
+    // The current song's URL, held across events so a click on an `addto:`
+    // menu item (which arrives as its own `MenuEvent`, independent of any
+    // fresh `MpdEvent`) can act on the song the menu was built from.
+    let mut current_url: Option<String> = None;
 
     event_loop.run(move |event, _window_target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -192,6 +197,34 @@ fn main() -> Result<()> {
                     spawn_command(&runtime, &current_client, "clear", |c| async move {
                         command::clear(&c).await
                     });
+                } else if let Some(rest) = menu_event.id.0.strip_prefix("album:") {
+                    match rest.parse::<u64>() {
+                        Ok(id) => {
+                            spawn_command(
+                                &runtime,
+                                &current_client,
+                                "album jump",
+                                move |c| async move { command::play_song(&c, SongId(id)).await },
+                            );
+                        }
+                        Err(e) => warn!("ignoring malformed album jump id {rest:?}: {e}"),
+                    }
+                } else if let Some(name) = menu_event.id.0.strip_prefix("addto:") {
+                    match &current_url {
+                        Some(url) => {
+                            let name = name.to_string();
+                            let url = url.clone();
+                            spawn_command(
+                                &runtime,
+                                &current_client,
+                                "add to playlist",
+                                move |c| async move {
+                                    command::add_to_playlist(&c, &name, &url).await
+                                },
+                            );
+                        }
+                        None => warn!("ignoring \"addto:{name}\": no current song"),
+                    }
                 }
             }
             Event::Opened { urls } => {
@@ -219,6 +252,7 @@ fn main() -> Result<()> {
                         debug!("MPD state: {:?}", snapshot.status.state);
                         play_state = snapshot.status.state;
                         current_client = Some(client);
+                        current_url = snapshot.song.as_ref().map(|song| song.url.clone());
                         let display = menu::display_for_snapshot(&snapshot);
 
                         let entries = queue_entries(&snapshot.queue);
@@ -230,6 +264,15 @@ fn main() -> Result<()> {
                             .and_then(|song| playlists.membership.get(&song.url))
                             .cloned()
                             .unwrap_or_default();
+                        // A name in `key_playlists` that doesn't match a real
+                        // MPD playlist is already logged at `warn` when the
+                        // cache loads (`mpd.rs::load_playlist_cache`) — this
+                        // just excludes it from "Add to" (spec §3/§0.1).
+                        let known_key_playlists: Vec<String> = key_playlists
+                            .iter()
+                            .filter(|name| playlists.names.contains(name))
+                            .cloned()
+                            .collect();
                         let (title, artists): (Option<&str>, &[String]) = match &snapshot.song {
                             Some(song) => (song.title(), song.artists()),
                             None => (None, &[]),
@@ -242,7 +285,7 @@ fn main() -> Result<()> {
                             current_pos,
                             &entries,
                             &playlists_for_url,
-                            &key_playlists,
+                            &known_key_playlists,
                             title,
                             artists,
                         );
@@ -250,6 +293,7 @@ fn main() -> Result<()> {
                     }
                     MpdEvent::Disconnected => {
                         current_client = None;
+                        current_url = None;
                         let display = menu::disconnected_display();
                         let model = menu::model(
                             PlayState::Stopped,
