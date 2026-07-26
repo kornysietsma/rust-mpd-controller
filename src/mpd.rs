@@ -29,6 +29,11 @@ pub struct PlayerSnapshot {
 pub struct PlaylistCache {
     /// song URL -> sorted playlist names containing it.
     pub membership: HashMap<String, Vec<String>>,
+    /// Every playlist name MPD reported, whether or not it currently
+    /// contains any songs. Used to validate `key_playlists` entries (spec
+    /// §3) — `membership`'s keys alone can't distinguish "playlist doesn't
+    /// exist" from "playlist exists but is empty".
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +76,8 @@ pub async fn run(config: Config, on_event: impl Fn(MpdEvent) + Send + Sync + 'st
                 );
                 backoff = INITIAL_BACKOFF;
 
-                let mut playlist_cache = load_playlist_cache_or_warn(&client).await;
+                let mut playlist_cache =
+                    load_playlist_cache_or_warn(&client, &config.key_playlists).await;
                 let mut queue = match publish_full_snapshot(&client, &playlist_cache, &on_event).await
                 {
                     Ok(queue) => queue,
@@ -86,6 +92,7 @@ pub async fn run(config: Config, on_event: impl Fn(MpdEvent) + Send + Sync + 'st
                     &mut events,
                     &mut queue,
                     &mut playlist_cache,
+                    &config.key_playlists,
                     &on_event,
                 )
                 .await;
@@ -122,6 +129,7 @@ async fn run_idle_loop(
     events: &mut ConnectionEvents,
     queue: &mut Vec<SongInQueue>,
     playlist_cache: &mut PlaylistCache,
+    key_playlists: &[String],
     on_event: &impl Fn(MpdEvent),
 ) {
     loop {
@@ -141,7 +149,7 @@ async fn run_idle_loop(
                     }
                 }
                 Subsystem::StoredPlaylist => {
-                    match publish_playlist_snapshot(client, queue, on_event).await {
+                    match publish_playlist_snapshot(client, queue, key_playlists, on_event).await {
                         Ok(fresh_cache) => *playlist_cache = fresh_cache,
                         Err(e) => {
                             warn!("failed to fetch MPD status after playlist change: {e:#}");
@@ -180,14 +188,29 @@ async fn fetch_queue(client: &Client) -> Result<Vec<SongInQueue>> {
 /// map. Does **not** deduplicate the playlist name list — unlike `mpc
 /// lsplaylists`, MPD's own `listplaylists` (what `GetPlaylists` sends)
 /// already returns each playlist once.
-async fn load_playlist_cache(client: &Client) -> Result<PlaylistCache> {
+///
+/// Also validates `key_playlists` against the names MPD actually returned,
+/// warning on any that don't resolve (spec §3) — the "Add to" submenu omits
+/// these, decided upstream in `main.rs` using `PlaylistCache::names`, not
+/// here or in `menu::model`.
+async fn load_playlist_cache(client: &Client, key_playlists: &[String]) -> Result<PlaylistCache> {
     let playlists = client
         .command(GetPlaylists)
         .await
         .context("failed to list playlists")?;
 
+    let names: Vec<String> = playlists.iter().map(|p| p.name.clone()).collect();
+    for key in key_playlists {
+        if !names.contains(key) {
+            warn!(
+                "key_playlists entry {key:?} does not match any MPD playlist; \
+                 it will be omitted from \"Add to\""
+            );
+        }
+    }
+
     let mut membership: HashMap<String, Vec<String>> = HashMap::new();
-    for playlist in playlists {
+    for playlist in &playlists {
         let urls = client
             .command(ListPlaylist(&playlist.name))
             .await
@@ -196,20 +219,22 @@ async fn load_playlist_cache(client: &Client) -> Result<PlaylistCache> {
             membership.entry(url).or_default().push(playlist.name.clone());
         }
     }
-    for names in membership.values_mut() {
-        names.sort();
+    for entries in membership.values_mut() {
+        entries.sort();
     }
-    Ok(PlaylistCache { membership })
+    Ok(PlaylistCache { membership, names })
 }
 
 /// Loads the playlist cache, warning and falling back to an empty cache on
 /// failure rather than propagating — per spec §4.2, the menu should render
 /// with empty membership rather than fail outright.
-async fn load_playlist_cache_or_warn(client: &Client) -> PlaylistCache {
-    load_playlist_cache(client).await.unwrap_or_else(|e| {
-        warn!("failed to load playlist cache: {e:#}");
-        PlaylistCache::default()
-    })
+async fn load_playlist_cache_or_warn(client: &Client, key_playlists: &[String]) -> PlaylistCache {
+    load_playlist_cache(client, key_playlists)
+        .await
+        .unwrap_or_else(|e| {
+            warn!("failed to load playlist cache: {e:#}");
+            PlaylistCache::default()
+        })
 }
 
 /// Refetches `Status`, `CurrentSong`, and the full queue, and publishes them
@@ -264,10 +289,11 @@ async fn publish_player_snapshot(
 async fn publish_playlist_snapshot(
     client: &Client,
     queue: &[SongInQueue],
+    key_playlists: &[String],
     on_event: &impl Fn(MpdEvent),
 ) -> Result<PlaylistCache> {
     let (status, song) = fetch_status_and_song(client).await?;
-    let playlist_cache = load_playlist_cache_or_warn(client).await;
+    let playlist_cache = load_playlist_cache_or_warn(client, key_playlists).await;
     on_event(MpdEvent::Connected(
         Box::new(PlayerSnapshot {
             status,

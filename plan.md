@@ -197,6 +197,11 @@ was updated to destructure the new third field as `_playlists` (unused until
 step 10), matching step 2's precedent of leaving now-plumbed data unread
 until the layer that consumes it lands.
 
+**Amended in step 6:** `PlaylistCache` gained a `names: Vec<String>` field and
+`load_playlist_cache` gained a `key_playlists: &[String]` parameter, to add
+the `warn!`-on-unresolvable-name check that spec §3 calls for. See step 6's
+notes for the full reasoning.
+
 **Verify:**
 - `cargo build` + `cargo clippy --all-targets` clean, except the same
   transient `dead_code` warning pattern as step 2 — now also covering
@@ -297,31 +302,59 @@ step's new functions/structs — resolves once step 6's `model()` calls them.
 
 ## 6. `menu.rs` — pure model, part 3: playlist membership and `model()` assembly
 
-- [ ] "In playlists": sort `playlists_for_url` case-insensitively.
-  - [ ] test: sorted case-insensitively (mixed-case input)
-- [ ] "Add to": `key_playlists.iter().filter(not already in playlists_for_url)`,
+- [x] "In playlists": sort `playlists_for_url` case-insensitively.
+  - [x] test: sorted case-insensitively (mixed-case input)
+- [x] "Add to": `key_playlists.iter().filter(not already in playlists_for_url)`,
       preserving config order.
-  - [ ] test: excludes playlists already containing the song
-  - [ ] test: empty `key_playlists` → empty result (caller omits the
+  - [x] test: excludes playlists already containing the song
+  - [x] test: empty `key_playlists` → empty result (caller omits the
         submenu — see §6.2's "submenu omitted" is a `render()`-level
         decision, driven by an empty `Vec` here)
-  - [ ] test: song in no playlists → "in playlists" empty, "add to" is the
+  - [x] test: song in no playlists → "in playlists" empty, "add to" is the
         full (order-preserved) `key_playlists` list
-- [ ] Note: "`key_playlists` naming a nonexistent playlist → omitted" (spec
+- [x] Note: "`key_playlists` naming a nonexistent playlist → omitted" (spec
       §9) is a property of how the cache is built (§3, `PlaylistCache` only
       contains playlists MPD actually returned) plus a `warn!` log on cache
       load for names that don't resolve — not logic inside `model()` itself.
       Cross-reference: add the `warn!` in step 3, add a menu-level regression
       test here that a `key_playlists` entry absent from `playlists_for_url`'s
       *universe* still produces a correct (shorter) "Add to" list.
-- [ ] Assemble `MenuModel` struct and the `model()` function per spec §8.1's
+
+  Went back into `mpd.rs` (step 3) to add this: `PlaylistCache` gained a
+  `names: Vec<String>` field (every playlist name MPD returned, independent
+  of `membership` — needed because an empty-but-real playlist would
+  otherwise be indistinguishable from a nonexistent one). `load_playlist_cache`
+  now takes `key_playlists: &[String]` and warns for any entry not present
+  in `names`; threaded through `load_playlist_cache_or_warn`,
+  `publish_playlist_snapshot`, and `run_idle_loop` from `config.key_playlists`.
+  The *actual* omission from "Add to" still isn't `model()`'s job — it
+  happens because `main.rs` (step 10) will filter `key_playlists` against
+  `PlaylistCache::names` before ever calling `model()`. The regression test
+  added here (`add_to_list_does_not_itself_validate_playlist_existence`)
+  pins that boundary: `add_to_list` has no existence-check of its own and
+  trusts its input, so an unresolvable name only disappears if the caller
+  excludes it beforehand.
+- [x] Assemble `MenuModel` struct and the `model()` function per spec §8.1's
       signature, wiring together steps 4–6's pieces plus `show_album_nav`
       gating whether `prev_album`/`next_album` are populated at all.
-  - [ ] test: `model()` end-to-end with a representative queue/playlist
+  - [x] test: `model()` end-to-end with a representative queue/playlist
         fixture — smoke test that the assembly wiring (not just each part in
         isolation) produces the expected `MenuModel`.
 
-**Verify:** `cargo test menu::`.
+  Added a private `album_nav()` helper inside `model()` that folds in the
+  "nothing playing" condition (`state` must be `Playing`/`Paused`) that sits
+  outside `show_album_nav`'s own remit (spec §5.3) — this is also where
+  step 5's deferred "stopped/no current song → hidden" checkbox is actually
+  exercised, via `model_hides_album_nav_when_stopped_even_with_a_long_run`.
+  `model()`'s `title`/`full_text` fields are computed by calling the
+  existing `track_display`/`empty_queue_display` directly rather than
+  reimplementing that logic — no new truncation rule to keep in sync.
+
+**Verify:** `cargo test menu::` — 8 new tests, all passing (64/64 full
+suite). `cargo build`/`clippy --all-targets` clean apart from the same
+transient `dead_code` pattern, now covering `model()`/`MenuModel` and the
+playlist-list helpers — resolves once step 7 wires `render()` (and step 10
+wires `main.rs`) up to call them.
 
 ## 7. `menu.rs` — render, icons, and menu structure
 

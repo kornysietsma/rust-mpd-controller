@@ -1,4 +1,5 @@
 use anyhow::Result;
+use mpd_client::responses::PlayState;
 use tray_icon::menu::{Menu, MenuItem};
 
 use crate::mpd::PlayerSnapshot;
@@ -205,6 +206,95 @@ pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     match &snapshot.song {
         Some(song) => track_display(song.title(), &song.url, song.artists()),
         None => empty_queue_display(),
+    }
+}
+
+/// "In playlists" contents (spec §6.1): every playlist containing the
+/// current song, sorted case-insensitively.
+fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
+    let mut names = playlists_for_url.to_vec();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
+/// "Add to" contents (spec §6.2): `key_playlists` minus whichever already
+/// contain the song, preserving config order. Trusts `key_playlists` to
+/// already be validated against real MPD playlist names — whether an entry
+/// corresponds to a real playlist is decided upstream (spec §3, the caller
+/// filters against `PlaylistCache::names` before this point), not here.
+fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<String> {
+    key_playlists
+        .iter()
+        .filter(|name| !playlists_for_url.contains(name))
+        .cloned()
+        .collect()
+}
+
+/// Whether album-nav should be computed at all, folding in the "nothing
+/// playing" condition from spec §5.3 that sits outside `show_album_nav`'s
+/// own remit (that function only looks at `random`/`run_len`).
+fn album_nav(
+    state: PlayState,
+    random: bool,
+    queue: &[QueueEntry],
+    current_pos: Option<usize>,
+) -> (Option<AlbumJump>, Option<AlbumJump>) {
+    if !matches!(state, PlayState::Playing | PlayState::Paused) {
+        return (None, None);
+    }
+    let Some(pos) = current_pos else {
+        return (None, None);
+    };
+    let Some((start, end)) = album_run(queue, pos) else {
+        return (None, None);
+    };
+    if !show_album_nav(random, end - start + 1) {
+        return (None, None);
+    }
+    (prev_album_jump(queue, pos), next_album_jump(queue, pos))
+}
+
+/// Everything needed to render the dropdown menu, computed from primitives
+/// so it's unit-testable without a live MPD connection (spec §8.1). Mirrors
+/// `Display`'s `title`/`full_text` shape for the current track, plus the
+/// album-nav and playlist-membership rows.
+pub struct MenuModel {
+    pub title: String,
+    pub full_text: Option<String>,
+    pub prev_album: Option<AlbumJump>,
+    pub next_album: Option<AlbumJump>,
+    pub in_playlists: Vec<String>,
+    pub add_to: Vec<String>,
+}
+
+/// Pure: assembles a `MenuModel` from already-extracted primitives. All the
+/// rules in spec §5 and §6 live here; `render` (step 7) makes no further
+/// decisions.
+#[allow(clippy::too_many_arguments)]
+pub fn model(
+    state: PlayState,
+    random: bool,
+    current: Option<&QueueEntry>,
+    current_pos: Option<usize>,
+    queue: &[QueueEntry],
+    playlists_for_url: &[String],
+    key_playlists: &[String],
+    title: Option<&str>,
+    artists: &[String],
+) -> MenuModel {
+    let display = match current {
+        Some(entry) => track_display(title, &entry.url, artists),
+        None => empty_queue_display(),
+    };
+    let (prev_album, next_album) = album_nav(state, random, queue, current_pos);
+
+    MenuModel {
+        title: display.title,
+        full_text: display.full_text,
+        prev_album,
+        next_album,
+        in_playlists: in_playlists_list(playlists_for_url),
+        add_to: add_to_list(playlists_for_url, key_playlists),
     }
 }
 
@@ -558,5 +648,128 @@ mod tests {
         ];
         assert_eq!(next_album_jump(&queue, 1), None);
         assert_eq!(prev_album_jump(&queue, 0), None);
+    }
+
+    #[test]
+    fn in_playlists_list_sorts_case_insensitively() {
+        let playlists = vec![
+            "zebra".to_string(),
+            "Five stars".to_string(),
+            "album".to_string(),
+        ];
+        assert_eq!(
+            in_playlists_list(&playlists),
+            vec!["album".to_string(), "Five stars".to_string(), "zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn add_to_list_excludes_playlists_already_containing_song() {
+        let playlists_for_url = vec!["Five stars".to_string()];
+        let key_playlists = vec![
+            "Five stars".to_string(),
+            "My Top Rated".to_string(),
+            "mellow_2024".to_string(),
+        ];
+        assert_eq!(
+            add_to_list(&playlists_for_url, &key_playlists),
+            vec!["My Top Rated".to_string(), "mellow_2024".to_string()]
+        );
+    }
+
+    #[test]
+    fn add_to_list_empty_key_playlists_is_empty() {
+        let playlists_for_url = vec!["Five stars".to_string()];
+        assert_eq!(add_to_list(&playlists_for_url, &[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn add_to_list_song_in_no_playlists_offers_full_key_playlists_in_order() {
+        let key_playlists = vec![
+            "Five stars".to_string(),
+            "My Top Rated".to_string(),
+            "mellow_2024".to_string(),
+        ];
+        assert_eq!(in_playlists_list(&[]), Vec::<String>::new());
+        assert_eq!(add_to_list(&[], &key_playlists), key_playlists);
+    }
+
+    #[test]
+    fn add_to_list_does_not_itself_validate_playlist_existence() {
+        // Whether a `key_playlists` entry corresponds to a real MPD playlist
+        // is resolved upstream of this function (main.rs filters
+        // `key_playlists` against `PlaylistCache::names` before calling
+        // `model()`, spec §3). From here, an unresolvable name is
+        // indistinguishable from a real playlist that just doesn't contain
+        // this song, and is included the same way — pinning that this
+        // function needs no existence-check of its own.
+        let playlists_for_url = vec!["Five stars".to_string()];
+        let key_playlists = vec!["Five stars".to_string(), "Typo'd Playlist".to_string()];
+        assert_eq!(
+            add_to_list(&playlists_for_url, &key_playlists),
+            vec!["Typo'd Playlist".to_string()]
+        );
+    }
+
+    #[test]
+    fn model_hides_album_nav_when_stopped_even_with_a_long_run() {
+        let queue = vec![
+            queue_entry("A/Al/1.mp3", Some("Al"), 1),
+            queue_entry("A/Al/2.mp3", Some("Al"), 2),
+            queue_entry("A/Al/3.mp3", Some("Al"), 3),
+            queue_entry("A/Al/4.mp3", Some("Al"), 4),
+            queue_entry("A/Al/5.mp3", Some("Al"), 5),
+        ];
+        let model = model(
+            PlayState::Stopped,
+            false,
+            Some(&queue[2]),
+            Some(2),
+            &queue,
+            &[],
+            &[],
+            Some("Track 3"),
+            &[],
+        );
+        assert!(model.prev_album.is_none());
+        assert!(model.next_album.is_none());
+    }
+
+    #[test]
+    fn model_end_to_end_assembles_expected_menu_model() {
+        let queue = vec![
+            queue_entry("Beatles/Abbey Road/1.mp3", Some("Abbey Road"), 1),
+            queue_entry("Beatles/Abbey Road/2.mp3", Some("Abbey Road"), 2),
+            queue_entry("Beatles/Abbey Road/3.mp3", Some("Abbey Road"), 3),
+            queue_entry("Beatles/Abbey Road/4.mp3", Some("Abbey Road"), 4),
+            queue_entry("Beatles/Abbey Road/5.mp3", Some("Abbey Road"), 5),
+            queue_entry("Beatles/Let It Be/1.mp3", Some("Let It Be"), 6),
+        ];
+        let playlists_for_url = vec!["Five stars".to_string()];
+        let key_playlists = vec!["Five stars".to_string(), "My Top Rated".to_string()];
+        let artists = vec!["Beatles".to_string()];
+
+        let model = model(
+            PlayState::Playing,
+            false,
+            Some(&queue[2]),
+            Some(2),
+            &queue,
+            &playlists_for_url,
+            &key_playlists,
+            Some("Come Together"),
+            &artists,
+        );
+
+        assert_eq!(model.title, "Come Together - Beatles");
+        assert!(model.full_text.is_none());
+        let prev = model.prev_album.unwrap();
+        assert_eq!(prev.label, "Start of Album");
+        assert_eq!(prev.song_id, 1);
+        let next = model.next_album.unwrap();
+        assert_eq!(next.label, "Next Album: Let It Be");
+        assert_eq!(next.song_id, 6);
+        assert_eq!(model.in_playlists, vec!["Five stars".to_string()]);
+        assert_eq!(model.add_to, vec!["My Top Rated".to_string()]);
     }
 }
