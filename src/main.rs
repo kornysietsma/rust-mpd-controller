@@ -143,19 +143,8 @@ fn main() -> Result<()> {
         let _ = proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    let initial_model = menu::model(
-        PlayState::Stopped,
-        false,
-        None,
-        None,
-        &[],
-        &[],
-        &[],
-        None,
-        &[],
-    );
     let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu::render(&initial_model)?))
+        .with_menu(Box::new(menu::render(&menu::MenuModel::empty())?))
         .with_title("MpdController")
         .with_tooltip("MpdController")
         .build()?;
@@ -197,7 +186,7 @@ fn main() -> Result<()> {
                     spawn_command(&runtime, &current_client, "clear", |c| async move {
                         command::clear(&c).await
                     });
-                } else if let Some(rest) = menu_event.id.0.strip_prefix("album:") {
+                } else if let Some(rest) = menu::strip_album_id(&menu_event.id.0) {
                     match rest.parse::<u64>() {
                         Ok(id) => {
                             spawn_command(
@@ -209,7 +198,7 @@ fn main() -> Result<()> {
                         }
                         Err(e) => warn!("ignoring malformed album jump id {rest:?}: {e}"),
                     }
-                } else if let Some(name) = menu_event.id.0.strip_prefix("addto:") {
+                } else if let Some(name) = menu::strip_addto_id(&menu_event.id.0) {
                     match &current_url {
                         Some(url) => {
                             let name = name.to_string();
@@ -256,8 +245,22 @@ fn main() -> Result<()> {
                         let display = menu::display_for_snapshot(&snapshot);
 
                         let entries = queue_entries(&snapshot.queue);
-                        let current_pos = snapshot.status.current_song.map(|(pos, _)| pos.0);
-                        let current = current_pos.and_then(|pos| entries.get(pos));
+                        // Only a position that actually resolves to a queue
+                        // entry becomes a `CurrentTrack`; an out-of-bounds one
+                        // yields `None`, which is what hides the track section.
+                        let current = snapshot
+                            .status
+                            .current_song
+                            .and_then(|(pos, _)| Some((pos.0, entries.get(pos.0)?)))
+                            .map(|(pos, entry)| menu::CurrentTrack {
+                                pos,
+                                url: &entry.url,
+                                title: snapshot.song.as_ref().and_then(|song| song.title()),
+                                artists: snapshot
+                                    .song
+                                    .as_ref()
+                                    .map_or(&[][..], |song| song.artists()),
+                            });
                         let playlists_for_url = snapshot
                             .song
                             .as_ref()
@@ -273,40 +276,23 @@ fn main() -> Result<()> {
                             .filter(|name| playlists.names.contains(name))
                             .cloned()
                             .collect();
-                        let (title, artists): (Option<&str>, &[String]) = match &snapshot.song {
-                            Some(song) => (song.title(), song.artists()),
-                            None => (None, &[]),
-                        };
-
                         let model = menu::model(
                             play_state,
                             snapshot.status.random,
-                            current,
-                            current_pos,
                             &entries,
+                            current,
                             &playlists_for_url,
                             &known_key_playlists,
-                            title,
-                            artists,
                         );
                         (display, menu::render(&model))
                     }
                     MpdEvent::Disconnected => {
                         current_client = None;
                         current_url = None;
-                        let display = menu::disconnected_display();
-                        let model = menu::model(
-                            PlayState::Stopped,
-                            false,
-                            None,
-                            None,
-                            &[],
-                            &[],
-                            &[],
-                            None,
-                            &[],
-                        );
-                        (display, menu::render(&model))
+                        (
+                            menu::disconnected_display(),
+                            menu::render(&menu::MenuModel::empty()),
+                        )
                     }
                 };
                 tray_icon.set_title(Some(&display.title));

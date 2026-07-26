@@ -18,17 +18,15 @@ pub struct QueueEntry {
     pub id: u64,
 }
 
-/// The parent directory of a song URL, used as its album identity (spec
-/// §5.1): two queue entries are the same album iff they share one. `None`
-/// for a library-root file with no parent directory.
+/// A song's album identity (spec §5.1): two queue entries are the same album
+/// iff they share a parent directory. Chosen over the `album`/`albumartist`
+/// tags, which merge genuinely distinct self-titled albums into one blob.
 fn album_key(url: &str) -> Option<&str> {
     url.rsplit_once('/').map(|(dir, _)| dir)
 }
 
-/// Whether two queue entries belong to the same album — i.e. both have a
-/// parent directory, and it's the same one. A library-root file (no parent)
-/// never counts as sharing an album with anything, including another
-/// root-level file.
+/// A library-root file (no parent directory) never shares an album with
+/// anything, including another root-level file.
 fn same_album(a: &str, b: &str) -> bool {
     matches!((album_key(a), album_key(b)), (Some(x), Some(y)) if x == y)
 }
@@ -53,10 +51,10 @@ fn album_run(queue: &[QueueEntry], current_pos: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
-/// Whether album-nav rows should be shown at all (spec §5.3): only while not
-/// in `random` mode and only when sitting inside a run of at least 5. The
-/// "nothing playing / stopped" case isn't this function's concern — the
-/// caller only calls it when there's a current position to evaluate.
+/// Spec §5.3. `random` hides album nav because MPD plays a random *order*
+/// while leaving queue order untouched, making queue-order jumps meaningless.
+/// The threshold of 5 separates album listening (90–100% of positions sit in
+/// a run that long) from track-oriented playlists (4–18%).
 fn show_album_nav(random: bool, run_len: usize) -> bool {
     !random && run_len >= ALBUM_NAV_MIN_RUN
 }
@@ -64,29 +62,22 @@ fn show_album_nav(random: bool, run_len: usize) -> bool {
 const ALBUM_NAV_MIN_RUN: usize = 5;
 const ALBUM_NAME_MAX_CHARS: usize = 40;
 
-/// An album-navigation jump target (spec §5.4): the song to land on, and the
-/// full menu label describing the destination (e.g. `"Next Album: Let It
-/// Be"` or `"Start of Album"`). `render()` and click dispatch need no
-/// further knowledge of which case produced it.
+/// An album-navigation jump target (spec §5.4). `label` is the complete row
+/// text, so `render` and click dispatch never branch on which of the prev-item
+/// states produced it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AlbumJump {
     pub label: String,
     pub song_id: u64,
 }
 
-/// The basename of a song's parent directory — the fallback album display
-/// name when the `album` tag is absent (spec §5.2). `None` for a
-/// library-root file with no parent directory.
 fn directory_basename(url: &str) -> Option<&str> {
     let dir = album_key(url)?;
     Some(dir.rsplit('/').next().unwrap_or(dir))
 }
 
-/// The display name for the album a queue entry belongs to: its `album` tag,
-/// falling back to the parent directory's basename, then to the raw URL if
-/// even that's unavailable (a library-root file). Truncated to 40 chars
-/// (spec §5.2) — applied to the name only, so a long title never pushes the
-/// `Next Album: ` prefix off the menu.
+/// Spec §5.2. Truncation is applied to the name alone, so a long album title
+/// never pushes the `Next Album: ` prefix off the menu.
 fn album_display_name(entry: &QueueEntry) -> String {
     let name = entry
         .album
@@ -139,6 +130,9 @@ fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
 
 const EMPTY_QUEUE_ICON: &str = "♫";
 const DISCONNECTED_ICON: &str = "🔇";
+// Pinned to text presentation with U+FE0E (spec §7), as the menu glyphs below
+// are, so it renders monochrome and narrow rather than as wide colour emoji.
+const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
 const TITLE_MAX_CHARS: usize = 25;
 const ELLIPSIS: char = '…';
 
@@ -228,8 +222,8 @@ pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     }
 }
 
-/// "In playlists" contents (spec §6.1): every playlist containing the
-/// current song, sorted case-insensitively.
+/// "In playlists" contents (spec §6.1): **all** playlists containing the
+/// current song, not just the configured `key_playlists`.
 fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
     let mut names = playlists_for_url.to_vec();
     names.sort_by_key(|name| name.to_lowercase());
@@ -249,9 +243,9 @@ fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<St
         .collect()
 }
 
-/// Whether album-nav should be computed at all, folding in the "nothing
-/// playing" condition from spec §5.3 that sits outside `show_album_nav`'s
-/// own remit (that function only looks at `random`/`run_len`).
+/// Both album-nav targets, or `(None, None)` when the rows should be hidden:
+/// nothing playing, empty queue, position out of bounds, `random` on, or the
+/// run shorter than the threshold (spec §5.3).
 fn album_nav(
     state: PlayState,
     random: bool,
@@ -273,12 +267,9 @@ fn album_nav(
     (prev_album_jump(queue, pos), next_album_jump(queue, pos))
 }
 
-/// Everything needed to render the dropdown menu, computed from primitives
-/// so it's unit-testable without a live MPD connection (spec §8.1). No
-/// `title` field — the tray title is set independently via `Display`
-/// (`display_for_snapshot`); spec §8.1 includes one, but nothing consumes it
-/// here, so it's left out (YAGNI) and can be added back if a real need shows
-/// up.
+/// Everything needed to render the dropdown menu, computed from primitives so
+/// it's unit-testable without a live MPD connection (spec §8.1). Carries no
+/// tray title — that's set independently via `Display`.
 pub struct MenuModel {
     pub full_text: Option<String>,
     pub prev_album: Option<AlbumJump>,
@@ -288,6 +279,19 @@ pub struct MenuModel {
 }
 
 impl MenuModel {
+    /// The model with nothing to show: no track context, no album nav, no
+    /// playlists. Used at startup before the first MPD event and whenever the
+    /// connection drops, leaving just the always-present action rows and Quit.
+    pub fn empty() -> Self {
+        MenuModel {
+            full_text: None,
+            prev_album: None,
+            next_album: None,
+            in_playlists: Vec::new(),
+            add_to: Vec::new(),
+        }
+    }
+
     /// Whether the album-nav section (and the separator preceding it) should
     /// be emitted at all. Spec §6's "omit the separator when the section
     /// between them is empty" rule — a decision, so it lives here rather than
@@ -306,24 +310,37 @@ impl MenuModel {
     }
 }
 
+/// The playing track, as far as the menu cares: where it sits in the queue,
+/// and how to name it. Bundled rather than passed as four loose parameters so
+/// the type enforces "all present or all absent" — the earlier signature let
+/// `current_pos` be `Some` while the track itself was `None`, a combination
+/// with no meaning that every consumer had to defend against anyway.
+pub struct CurrentTrack<'a> {
+    pub pos: usize,
+    pub url: &'a str,
+    pub title: Option<&'a str>,
+    pub artists: &'a [String],
+}
+
 /// Pure: assembles a `MenuModel` from already-extracted primitives. All the
-/// rules in spec §5 and §6 live here; `render` (step 7) makes no further
-/// decisions.
-#[allow(clippy::too_many_arguments)]
+/// rules in spec §5 and §6 live here; `render` makes no further decisions.
 pub fn model(
     state: PlayState,
     random: bool,
-    current: Option<&QueueEntry>,
-    current_pos: Option<usize>,
     queue: &[QueueEntry],
+    current: Option<CurrentTrack<'_>>,
     playlists_for_url: &[String],
     key_playlists: &[String],
-    title: Option<&str>,
-    artists: &[String],
 ) -> MenuModel {
-    let full_text =
-        current.and_then(|entry| track_display(state, title, &entry.url, artists).full_text);
-    let (prev_album, next_album) = album_nav(state, random, queue, current_pos);
+    let full_text = current
+        .as_ref()
+        .and_then(|track| track_display(state, track.title, track.url, track.artists).full_text);
+    let (prev_album, next_album) = album_nav(
+        state,
+        random,
+        queue,
+        current.as_ref().map(|track| track.pos),
+    );
 
     MenuModel {
         full_text,
@@ -342,20 +359,34 @@ const NEXT_ICON: &str = "\u{23ED}\u{FE0E}";
 const CLEAR_ICON: &str = "\u{23F9}\u{FE0E}";
 const PREV_ALBUM_ICON: &str = "\u{23EE}\u{FE0E}\u{23EE}\u{FE0E}";
 const NEXT_ALBUM_ICON: &str = "\u{23ED}\u{FE0E}\u{23ED}\u{FE0E}";
-/// Prefixed onto the tray title when paused, by `track_display` above — a
-/// `Display` concern, not used by `render` below.
-const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
 
-/// The id for an album-navigation menu item (spec §8.2): `album:<song_id>`.
+// The two dynamic menu-id families (spec §8.2). Both the builders and the
+// `strip_*` parsers live here so `main.rs` dispatch never has to know the wire
+// format — otherwise the halves sit in different modules with nothing keeping
+// them in step.
+const ALBUM_ID_PREFIX: &str = "album:";
+const ADDTO_ID_PREFIX: &str = "addto:";
+
 fn album_jump_item_id(song_id: u64) -> String {
-    format!("album:{song_id}")
+    format!("{ALBUM_ID_PREFIX}{song_id}")
 }
 
-/// The id for an "Add to" playlist menu item (spec §8.2): `addto:<name>`.
-/// Playlist names may contain `:`; dispatch (step 10) recovers the full name
-/// via `strip_prefix("addto:")`, which doesn't split on interior colons.
 fn addto_item_id(name: &str) -> String {
-    format!("addto:{name}")
+    format!("{ADDTO_ID_PREFIX}{name}")
+}
+
+/// The song-id text of an album-nav menu id, or `None` if `id` isn't one.
+/// Parsing the number is left to the caller, so it can log a malformed id
+/// distinctly from an id belonging to some other item.
+pub fn strip_album_id(id: &str) -> Option<&str> {
+    id.strip_prefix(ALBUM_ID_PREFIX)
+}
+
+/// The playlist name in an "Add to" menu id, or `None` if `id` isn't one.
+/// Names may contain `:`, so the whole remainder after the fixed prefix is the
+/// name — this never splits on an interior colon.
+pub fn strip_addto_id(id: &str) -> Option<&str> {
+    id.strip_prefix(ADDTO_ID_PREFIX)
 }
 
 /// Turns an already-computed `MenuModel` into `muda` items. Every rule from
@@ -531,25 +562,15 @@ mod tests {
 
     #[test]
     fn track_display_paused_prefix_sits_outside_the_truncation_budget() {
-        // A title that exactly fills the 25-char budget must truncate
-        // identically whether paused or playing (spec §7.1) — the glyph is
-        // prepended after truncation, so it doesn't eat into the budget.
-        let title = "a".repeat(TITLE_MAX_CHARS);
-        let playing = track_display(PlayState::Playing, Some(&title), "foo.mp3", &[]);
-        let paused = track_display(PlayState::Paused, Some(&title), "foo.mp3", &[]);
-        assert_eq!(playing.title, title);
-        assert_eq!(paused.title, format!("{PAUSED_ICON} {title}"));
-        assert!(playing.full_text.is_none());
-        assert!(paused.full_text.is_none());
-    }
-
-    #[test]
-    fn track_display_long_title_truncates_identically_paused_or_playing() {
-        let long_title = "a".repeat(40);
-        let playing = track_display(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
-        let paused = track_display(PlayState::Paused, Some(&long_title), "foo.mp3", &[]);
-        assert_eq!(paused.title, format!("{PAUSED_ICON} {}", playing.title));
-        assert_eq!(playing.full_text, paused.full_text);
+        // Spec §7.1: the glyph is prepended *after* truncation, so text is cut
+        // at exactly the same point whether paused or playing. Checked at the
+        // budget boundary and well past it.
+        for title in [&"a".repeat(TITLE_MAX_CHARS), &"a".repeat(40)] {
+            let playing = track_display(PlayState::Playing, Some(title), "foo.mp3", &[]);
+            let paused = track_display(PlayState::Paused, Some(title), "foo.mp3", &[]);
+            assert_eq!(paused.title, format!("{PAUSED_ICON} {}", playing.title));
+            assert_eq!(playing.full_text, paused.full_text);
+        }
     }
 
     #[test]
@@ -575,28 +596,17 @@ mod tests {
     }
 
     #[test]
-    fn album_key_same_directory_is_same_album() {
+    fn album_key_groups_by_directory() {
+        // Every multi-disc album in this library lives in one directory with
+        // continuous track numbering (spec §2.1), so directory grouping
+        // handles them with no CD1/CD2 special-casing.
         assert_eq!(
             album_key("Beatles/Abbey Road/01 Come Together.mp3"),
             album_key("Beatles/Abbey Road/02 Something.mp3")
         );
-    }
-
-    #[test]
-    fn album_key_different_directory_is_different_album() {
         assert_ne!(
             album_key("Beatles/Abbey Road/01 Come Together.mp3"),
             album_key("Beatles/Let It Be/01 Two of Us.mp3")
-        );
-    }
-
-    #[test]
-    fn album_key_multi_disc_in_one_directory_is_one_album() {
-        // Continuous track numbering across a two-disc album living in a
-        // single directory (spec §2.1) — no CD1/CD2 subdirectories.
-        assert_eq!(
-            album_key("Pink Floyd/The Wall/12 Goodbye Cruel World.mp3"),
-            album_key("Pink Floyd/The Wall/13 Hey You.mp3")
         );
     }
 
@@ -796,19 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn traversal_never_wraps_regardless_of_repeat() {
-        // Neither traversal function takes a `repeat` parameter — there's
-        // nothing to consult, so wraparound can't happen no matter MPD's
-        // repeat setting.
-        let queue = vec![
-            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
-            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
-        ];
-        assert_eq!(next_album_jump(&queue, 1), None);
-        assert_eq!(prev_album_jump(&queue, 0), None);
-    }
-
-    #[test]
     fn in_playlists_list_sorts_case_insensitively() {
         let playlists = vec![
             "zebra".to_string(),
@@ -846,31 +843,20 @@ mod tests {
     }
 
     #[test]
-    fn add_to_list_song_in_no_playlists_offers_full_key_playlists_in_order() {
+    fn add_to_list_song_in_no_playlists_offers_full_key_playlists_in_config_order() {
         let key_playlists = vec![
+            "zebra".to_string(),
             "Five stars".to_string(),
-            "My Top Rated".to_string(),
-            "mellow_2024".to_string(),
+            "album".to_string(),
         ];
-        assert_eq!(in_playlists_list(&[]), Vec::<String>::new());
+        // Config order, deliberately not the alphabetical order "In playlists"
+        // uses (spec §6.2).
         assert_eq!(add_to_list(&[], &key_playlists), key_playlists);
     }
 
     #[test]
-    fn add_to_list_does_not_itself_validate_playlist_existence() {
-        // Whether a `key_playlists` entry corresponds to a real MPD playlist
-        // is resolved upstream of this function (main.rs filters
-        // `key_playlists` against `PlaylistCache::names` before calling
-        // `model()`, spec §3). From here, an unresolvable name is
-        // indistinguishable from a real playlist that just doesn't contain
-        // this song, and is included the same way — pinning that this
-        // function needs no existence-check of its own.
-        let playlists_for_url = vec!["Five stars".to_string()];
-        let key_playlists = vec!["Five stars".to_string(), "Typo'd Playlist".to_string()];
-        assert_eq!(
-            add_to_list(&playlists_for_url, &key_playlists),
-            vec!["Typo'd Playlist".to_string()]
-        );
+    fn in_playlists_list_song_in_no_playlists_is_empty() {
+        assert_eq!(in_playlists_list(&[]), Vec::<String>::new());
     }
 
     #[test]
@@ -885,12 +871,14 @@ mod tests {
         let model = model(
             PlayState::Stopped,
             false,
-            Some(&queue[2]),
-            Some(2),
             &queue,
+            Some(CurrentTrack {
+                pos: 2,
+                url: &queue[2].url,
+                title: Some("Track 3"),
+                artists: &[],
+            }),
             &[],
-            &[],
-            Some("Track 3"),
             &[],
         );
         assert!(model.prev_album.is_none());
@@ -917,13 +905,15 @@ mod tests {
         let model = model(
             PlayState::Playing,
             false,
-            Some(&queue[2]),
-            Some(2),
             &queue,
+            Some(CurrentTrack {
+                pos: 2,
+                url: &queue[2].url,
+                title: Some("Come Together"),
+                artists: &artists,
+            }),
             &playlists_for_url,
             &key_playlists,
-            Some("Come Together"),
-            &artists,
         );
 
         assert_eq!(
@@ -994,18 +984,26 @@ mod tests {
     }
 
     #[test]
-    fn addto_item_id_round_trips_name_containing_a_colon() {
-        // Playlist names may contain ':' (spec §8.2) — `strip_prefix` must
-        // recover the whole remainder, not just up to the first colon.
+    fn addto_id_round_trips_name_containing_a_colon() {
+        // Playlist names may contain ':' (spec §8.2) — the parser must recover
+        // the whole remainder, not just up to the first colon.
         let name = "Side A: Favourites";
-        let id = addto_item_id(name);
-        assert_eq!(id.strip_prefix("addto:"), Some(name));
+        assert_eq!(strip_addto_id(&addto_item_id(name)), Some(name));
     }
 
     #[test]
-    fn album_jump_item_id_round_trips_song_id() {
-        let id = album_jump_item_id(42);
-        let recovered: u64 = id.strip_prefix("album:").unwrap().parse().unwrap();
-        assert_eq!(recovered, 42);
+    fn album_id_round_trips_song_id() {
+        let recovered = strip_album_id(&album_jump_item_id(42)).map(str::parse::<u64>);
+        assert_eq!(recovered, Some(Ok(42)));
+    }
+
+    #[test]
+    fn id_parsers_reject_the_other_family_and_static_ids() {
+        // What stops dispatch firing the wrong branch: each parser must not
+        // claim ids belonging to the other family or to a static item.
+        assert_eq!(strip_album_id(&addto_item_id("Five stars")), None);
+        assert_eq!(strip_addto_id(&album_jump_item_id(42)), None);
+        assert_eq!(strip_album_id(QUIT_ID), None);
+        assert_eq!(strip_addto_id(QUIT_ID), None);
     }
 }

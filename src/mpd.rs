@@ -253,10 +253,31 @@ async fn load_playlist_cache_or_warn(client: &Client, key_playlists: &[String]) 
         })
 }
 
-/// Refetches `Status`, `CurrentSong`, and the full queue, and publishes them
-/// together (reusing the given playlist cache unchanged). Used on connect and
-/// on `Subsystem::Queue` changes. Returns the freshly fetched queue so the
-/// caller can cache it for subsequent player-only refreshes.
+/// The one place that knows the shape of an `MpdEvent::Connected`. The three
+/// `publish_*` functions below differ only in which of the two caches they
+/// refresh before calling this.
+fn emit_connected(
+    client: &Client,
+    status: Status,
+    song: Option<Song>,
+    queue: Vec<SongInQueue>,
+    playlist_cache: &PlaylistCache,
+    on_event: &impl Fn(MpdEvent),
+) {
+    on_event(MpdEvent::Connected(
+        Box::new(PlayerSnapshot {
+            status,
+            song,
+            queue,
+        }),
+        Box::new(playlist_cache.clone()),
+        client.clone(),
+    ));
+}
+
+/// Refetches `Status`, `CurrentSong`, and the full queue, reusing the given
+/// playlist cache. Used on connect and on `Subsystem::Queue` changes. Returns
+/// the fresh queue so the caller can cache it for player-only refreshes.
 async fn publish_full_snapshot(
     client: &Client,
     playlist_cache: &PlaylistCache,
@@ -265,21 +286,20 @@ async fn publish_full_snapshot(
     let (status, song) = fetch_status_and_song(client).await?;
     let queue = fetch_queue(client).await?;
     debug!("refetched queue ({} tracks)", queue.len());
-    on_event(MpdEvent::Connected(
-        Box::new(PlayerSnapshot {
-            status,
-            song,
-            queue: queue.clone(),
-        }),
-        Box::new(playlist_cache.clone()),
-        client.clone(),
-    ));
+    emit_connected(
+        client,
+        status,
+        song,
+        queue.clone(),
+        playlist_cache,
+        on_event,
+    );
     Ok(queue)
 }
 
-/// Refetches only `Status` and `CurrentSong`, reusing the given cached queue
-/// and playlist cache. Used on `Subsystem::Player` changes, which never alter
-/// queue or playlist contents.
+/// Refetches only `Status` and `CurrentSong`, reusing both caches. Used on
+/// `Subsystem::Player`/`Options` changes, which alter neither queue nor
+/// playlist contents.
 async fn publish_player_snapshot(
     client: &Client,
     queue: &[SongInQueue],
@@ -288,22 +308,20 @@ async fn publish_player_snapshot(
 ) -> Result<()> {
     let (status, song) = fetch_status_and_song(client).await?;
     debug!("reused cached queue ({} tracks)", queue.len());
-    on_event(MpdEvent::Connected(
-        Box::new(PlayerSnapshot {
-            status,
-            song,
-            queue: queue.to_vec(),
-        }),
-        Box::new(playlist_cache.clone()),
-        client.clone(),
-    ));
+    emit_connected(
+        client,
+        status,
+        song,
+        queue.to_vec(),
+        playlist_cache,
+        on_event,
+    );
     Ok(())
 }
 
 /// Refetches `Status`, `CurrentSong`, and the full playlist cache, reusing the
-/// given cached queue (`StoredPlaylist` events never alter queue contents).
-/// Used on `Subsystem::StoredPlaylist` changes. Returns the freshly loaded
-/// cache so the caller can store it for subsequent refreshes.
+/// cached queue (`StoredPlaylist` events never alter queue contents). Returns
+/// the fresh cache so the caller can store it.
 async fn publish_playlist_snapshot(
     client: &Client,
     queue: &[SongInQueue],
@@ -317,14 +335,13 @@ async fn publish_playlist_snapshot(
         playlist_cache.names.len(),
         queue.len()
     );
-    on_event(MpdEvent::Connected(
-        Box::new(PlayerSnapshot {
-            status,
-            song,
-            queue: queue.to_vec(),
-        }),
-        Box::new(playlist_cache.clone()),
-        client.clone(),
-    ));
+    emit_connected(
+        client,
+        status,
+        song,
+        queue.to_vec(),
+        &playlist_cache,
+        on_event,
+    );
     Ok(playlist_cache)
 }
