@@ -4,6 +4,11 @@ A personal macOS tool to control MPD (Music Player Daemon) running locally. It i
 a **single long-running stateful service**: a menu-bar app that also handles a
 registered `mpdcontrol://` URL scheme. Rust throughout.
 
+> **Status: v1 complete.** Built, packaged, and verified end-to-end against
+> real MPD (see §12). This spec now describes the shipped system, not a plan.
+> `plan.md` has the step-by-step build history; §10/§11 below describe
+> possible future work, none of it started.
+
 > **Scope note:** This is a personal tool. Testing and documentation rigour are
 > intentionally light — enough to be reliable for daily personal use, not
 > production-grade. Prefer simple, working code over exhaustive coverage.
@@ -76,9 +81,10 @@ Chosen after a fresh (July 2026) review of the Rust ecosystem.
   we already run for the tray. No custom delegate or hand-rolled
   `NSAppleEventManager` (`kAEGetURL`) plumbing was needed — see §8 for the
   detail this uncovered about how `url::Url` parses a non-special scheme like
-  `mpdcontrol`. The matured `objc2` ecosystem remains available as a fallback
-  if `Event::Opened` ever proves unreliable in practice (unconfirmed until
-  end-to-end testing, spec §12).
+  `mpdcontrol`, and for confirmation that delivery works end-to-end once
+  packaged. The matured `objc2` ecosystem remains available as a fallback if
+  `Event::Opened` ever proves unreliable in some future macOS version, but
+  wasn't needed.
 - **`mpd_client`** (async/tokio, typed responses, first-class `idle`) is the
   best MPD library for a push-based, event-driven service.
 
@@ -173,6 +179,14 @@ deferred menu features; they can be present now without effect.
 Bundle: **MpdController.app**, an accessory app (`LSUIElement = true`, no Dock
 icon).
 
+> **Implementation note:** `LSUIElement = true` in `Info.plist` is not
+> sufficient on its own — `tao`'s event loop sets
+> `NSApplicationActivationPolicyRegular` at runtime by default, which
+> overrides it and produces a Dock icon anyway. `main.rs` must explicitly call
+> `event_loop.set_activation_policy(ActivationPolicy::Accessory)` (via
+> `tao::platform::macos::EventLoopExtMacOS`) right after building the event
+> loop. Confirmed fixed end-to-end (no Dock icon after rebuild/reinstall).
+
 ### v1 features — Now-playing + transport only
 
 - **Menu-bar title:** current track as `Title - Artist`, truncated (~25 chars)
@@ -223,6 +237,14 @@ icon).
   may be shelled out to the system `mpc` binary verbatim, covering the long tail
   of MPD commands for fire-and-forget use. (Implementer's discretion; keep it
   simple.)
+  - **Implementation note:** a GUI app launched via Launch Services (e.g. an
+    `mpdcontrol://` link opened from Safari/Notes, not a terminal) inherits
+    launchd's minimal `PATH`, which omits Homebrew's install dirs — a bare
+    `Command::new("mpc")` fails with "No such file or directory" in that
+    context even though `mpc` resolves fine from an interactive shell. The
+    app checks `/opt/homebrew/bin/mpc` and `/usr/local/bin/mpc` explicitly
+    before falling back to a bare `PATH` lookup
+    (`command::resolve_mpc_binary`). Confirmed fixed end-to-end.
 - **Delivery:** macOS routes the URL to the running **MpdController.app**, which
   handles the URL-open event (`tao`'s built-in `Event::Opened`, see §8) and
   dispatches within its own process/MPD connection. If the app isn't running,
@@ -251,12 +273,12 @@ icon).
   The app reads `url.host_str()` and percent-decodes it (`percent-encoding`
   crate) to recover the command text; this was confirmed experimentally
   against the exact spec §7 example before relying on it.
-- **Fallback if unreliable:** drop to `objc2` and register an
-  `NSAppleEventManager` handler for `kInternetEventClass` / `kAEGetURL`,
-  extracting the URL from `keyDirectObject`. Not needed so far — `tao`'s
-  `Event::Opened` compiles and unit-tests cleanly; the only unconfirmed part
-  is whether macOS actually routes registered `mpdcontrol://` links to it at
-  runtime, which requires packaging to test (see §12).
+- **Confirmed working end-to-end:** once packaged, installed to
+  `/Applications`, and launched once, `open 'mpdcontrol://...'` links are
+  delivered via `Event::Opened` and dispatched correctly against real MPD —
+  tested with a native command (`toggle`), a quoted-path recursive `add`
+  (the exact spec example), and an `mpc`-fallback command (`volume 50`). No
+  `objc2`/`NSAppleEventManager` fallback was needed.
 
 ---
 
@@ -264,15 +286,20 @@ icon).
 
 - Build the `.app` with **`cargo-bundle`**, driven by
   `[package.metadata.bundle]` in `Cargo.toml`:
-  - App name **MpdController**, icon, `LSUIElement = true`.
-  - `CFBundleURLTypes` declaring the **`mpdcontrol`** scheme.
-- Install flow (small script / `justfile`):
-  1. `cargo bundle --release`
-  2. Copy `MpdController.app` to `/Applications`.
-  3. First launch registers the URL scheme with Launch Services.
-- If `cargo-bundle` can't express something needed (e.g. exact `Info.plist`
-  keys), fall back to a small post-build script to patch the bundle —
-  implementer's discretion.
+  - App name **MpdController**, identifier `com.sietsma.mpdcontroller`, icon
+    (`assets/icon.icns` — currently a generated placeholder; swap the file
+    whenever a real icon is wanted, no config changes needed).
+  - `LSUIElement = true` via `osx_info_plist_exts = ["assets/info-plist-ext.plist"]`
+    (cargo-bundle has no direct top-level key for it, but merges this file's
+    contents into `Info.plist` verbatim). See §6's implementation note — this
+    alone isn't sufficient; `main.rs` also needs the explicit
+    `ActivationPolicy::Accessory` call.
+  - `CFBundleURLTypes` declaring the **`mpdcontrol`** scheme, via
+    `osx_url_schemes = ["mpdcontrol"]`.
+- Install flow: `install.sh` at the repo root runs `cargo bundle --release`
+  then copies `MpdController.app` into `/Applications` (replacing any
+  existing copy). First launch registers the URL scheme with Launch
+  Services.
 
 ---
 
@@ -330,13 +357,17 @@ Recorded only so the door isn't accidentally closed — **do not build in v1.**
 - No GUI/integration test harness required.
 - A short README with build/install/config instructions is sufficient.
 
-### Open questions / risks
-- **URL-open event delivery at runtime** is the remaining unproven piece.
-  `tao`'s `Event::Opened` (§8) is implemented, compiles, and is unit-tested
-  down to the decode step, which lowers the risk considerably versus the
-  original plan to hand-roll delegate code — but whether macOS actually
-  routes a registered `mpdcontrol://` link to a running/cold-started
-  `MpdController.app` can only be confirmed once the scheme is registered via
-  packaging. Fall back to `objc2` / `NSAppleEventManager` (§8) if it doesn't.
-- **`tray-icon` macOS cosmetic quirks** (icon rendering, occasional double icon
-  on some macOS versions) — expected minor; verify on the current OS.
+### Status: v1 complete
+
+All sections above describe the system as built and verified against real
+MPD, including packaging (§9) and end-to-end URL-scheme delivery (§8) — no
+open risks remain from the original plan. Two non-obvious runtime behaviours
+were found and fixed during verification and are captured inline above where
+relevant: `tao` overriding `LSUIElement` at runtime (§6), and the `mpc`
+fallback needing explicit Homebrew paths rather than a bare `PATH` lookup
+(§7). `tray-icon`'s known cosmetic quirks (icon rendering, occasional double
+icon on some macOS versions) were not encountered during manual verification
+on the current OS.
+
+See §10 for deferred features and §11 for how a CLI would fit if ever
+genuinely needed — neither is planned or started.
