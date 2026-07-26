@@ -13,18 +13,45 @@ use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, info, warn};
 use mpd_client::client::Client;
 use mpd_client::responses::PlayState;
+use percent_encoding::percent_decode_str;
 use simplelog::{Config as LogConfig, LevelFilter, WriteLogger};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tokio::runtime::Runtime;
 use tray_icon::menu::MenuEvent;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
+use url::Url;
 
 use crate::mpd::MpdEvent;
+
+/// The scheme registered for this app (spec §7, §9): `mpdcontrol://...`.
+const URL_SCHEME: &str = "mpdcontrol";
+
+/// Extracts and percent-decodes the command payload from an `mpdcontrol://`
+/// URL (spec §7). `mpdcontrol` is a non-special URL scheme, so per the
+/// WHATWG URL parsing rules the `url` crate implements, everything after
+/// `//` lands in the (still percent-encoded) opaque host component, not the
+/// path — confirmed against `mpdcontrol://add%20%22Album%2FPath%22`, which
+/// parses to host `"add%20%22Album%2FPath%22"` with an empty path.
+fn decode_command_from_url(url: &Url) -> Result<String> {
+    if url.scheme() != URL_SCHEME {
+        return Err(anyhow!(
+            "unexpected URL scheme {:?}, expected {URL_SCHEME:?}",
+            url.scheme()
+        ));
+    }
+    let payload = url
+        .host_str()
+        .ok_or_else(|| anyhow!("mpdcontrol URL has no command payload: {url}"))?;
+    let decoded = percent_decode_str(payload)
+        .decode_utf8()
+        .with_context(|| format!("mpdcontrol URL payload is not valid UTF-8: {url}"))?;
+    Ok(decoded.into_owned())
+}
 
 fn log_file_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
@@ -137,6 +164,25 @@ fn main() -> Result<()> {
                     });
                 }
             }
+            Event::Opened { urls } => {
+                for url in urls {
+                    match decode_command_from_url(&url) {
+                        Ok(input) => {
+                            info!("dispatching mpdcontrol URL command: {input:?}");
+                            let state = play_state;
+                            spawn_command(
+                                &runtime,
+                                &current_client,
+                                "url command",
+                                move |c| async move {
+                                    command::dispatch_or_fallback(&c, state, &input).await
+                                },
+                            );
+                        }
+                        Err(e) => warn!("ignoring mpdcontrol URL {url}: {e:#}"),
+                    }
+                }
+            }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
                 let display = match mpd_event {
                     MpdEvent::Connected(snapshot, client) => {
@@ -159,4 +205,31 @@ fn main() -> Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn decodes_quoted_path_from_spec_example() {
+        let url = Url::parse("mpdcontrol://add%20%22Album%2FPath%22").unwrap();
+        assert_eq!(
+            decode_command_from_url(&url).unwrap(),
+            r#"add "Album/Path""#
+        );
+    }
+
+    #[test]
+    fn decodes_simple_command_with_no_encoding() {
+        let url = Url::parse("mpdcontrol://toggle").unwrap();
+        assert_eq!(decode_command_from_url(&url).unwrap(), "toggle");
+    }
+
+    #[test]
+    fn rejects_unexpected_scheme() {
+        let url = Url::parse("https://example.com").unwrap();
+        assert!(decode_command_from_url(&url).is_err());
+    }
 }
