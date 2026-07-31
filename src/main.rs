@@ -107,8 +107,8 @@ where
 }
 
 /// Extracts the primitives `menu::model` needs from MPD's queue — kept here
-/// rather than in `menu.rs` (spec §0.4/`AGENTS.md`) so the pure model layer
-/// never depends on `mpd_client` types.
+/// rather than in `menu.rs` so the pure model layer never depends on
+/// `mpd_client` types, which can't be constructed in tests. See `AGENTS.md`.
 fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
     queue
         .iter()
@@ -270,7 +270,7 @@ fn main() -> Result<()> {
                         // A name in `key_playlists` that doesn't match a real
                         // MPD playlist is already logged at `warn` when the
                         // cache loads (`mpd.rs::load_playlist_cache`) — this
-                        // just excludes it from "Add to" (spec §3/§0.1).
+                        // just excludes it from "Add to".
                         let known_key_playlists: Vec<String> = key_playlists
                             .iter()
                             .filter(|name| playlists.names.contains(name))

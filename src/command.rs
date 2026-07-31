@@ -49,10 +49,9 @@ pub async fn clear(client: &Client) -> Result<()> {
     Ok(())
 }
 
-/// Jumps playback to `id` (album nav, menu-only — see spec §5.4). Uses the
-/// queue's `SongId` rather than `SongPosition` since positions shift if the
-/// queue is edited between the snapshot the menu was built from and the
-/// click.
+/// Jumps playback to `id` (album nav, menu-only). Uses the queue's `SongId`
+/// rather than `SongPosition` since positions shift if the queue is edited
+/// between the snapshot the menu was built from and the click.
 pub async fn play_song(client: &Client, id: SongId) -> Result<()> {
     client
         .command(Play::song(id))
@@ -61,7 +60,7 @@ pub async fn play_song(client: &Client, id: SongId) -> Result<()> {
     Ok(())
 }
 
-/// MPD's `playlistadd <playlist> <song url>` (menu-only "Add to", spec §6.2).
+/// MPD's `playlistadd <playlist> <song url>` (menu-only "Add to").
 pub async fn add_to_playlist(client: &Client, playlist: &str, url: &str) -> Result<()> {
     client
         .command(AddToPlaylist::new(playlist, url))

@@ -1,8 +1,11 @@
 # Agent notes
 
-A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. v1 is
-complete; see `README.md` for architecture and usage, and
-`docs/implementation-details.md` for the non-obvious details behind it.
+A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. Complete
+and in daily use: playback controls, album traversal, playlist membership and
+"Add to", plus the URL scheme. See `README.md` for architecture and usage, and
+`docs/implementation-details.md` for the non-obvious details behind it —
+including the measured evidence behind the album-grouping and run-length
+rules, which should not be re-derived or "tuned" without re-measuring.
 
 Scope is deliberately personal-tool-sized: prefer simple working code over
 exhaustive coverage, and don't design in speculative complexity. Ideas that
@@ -38,16 +41,13 @@ Known gotchas already found this way, so you don't have to re-derive them:
 - `muda` items are `Rc<RefCell<...>>` internally, so it's fine to rebuild the
   whole tray menu from scratch each event (`tray_icon.set_menu(...)`) rather
   than mutating one in place.
-- **`muda::Menu::new` panics off the main thread** ("`muda::Menu` can only be
-  created on the main thread"), and `cargo test` runs tests on spawned
-  threads — so `menu::render` is *untestable* and always will be. Don't waste
-  time writing a test for it. Keep every decision out of `render` and in
-  `menu::model` / `MenuModel`'s `show_*_section` methods, which are pure and
-  do have tests.
-- Don't add `muda` as a direct dependency — `tray_icon::menu` re-exports it.
-  Declaring both lets Cargo resolve two different muda versions, and since
-  muda's menu-event handling is process-global, clicks then silently stop
-  arriving.
+- **`muda::Menu::new` panics off the main thread**, and `cargo test` runs on
+  spawned threads — so `menu::render` can never be unit-tested. Don't try.
+  Keep decisions in `menu::model` / `MenuModel`'s `show_*_section` methods,
+  which are pure and tested.
+- Don't add `muda` as a direct dependency — `tray_icon::menu` re-exports it,
+  and declaring both risks two resolved muda versions with process-global
+  event state. Its absence from `Cargo.toml` is deliberate.
 - `mpc lsplaylists` returns each playlist name **twice** (once bare, once with
   `.m3u`) — it's also listing the playlist directory's files, an `mpc`
   artifact. MPD's own `listplaylists` returns clean bare names, which is what

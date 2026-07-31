@@ -121,7 +121,23 @@ does work when running from a dev shell).
   rebuilds — which we do, to match click events after `set_menu`.
 - `muda` items are `Rc<RefCell<...>>` internally, so rebuilding the whole tray
   menu from scratch on each event (`tray_icon.set_menu(...)`) is fine and
-  simpler than mutating one in place. That's what `menu::build_menu` does.
+  simpler than mutating one in place. That's what `menu::render` does.
+- **`muda::Menu::new` panics off the main thread** — "`muda::Menu` can only be
+  created on the main thread". `cargo test` runs each test on a spawned
+  thread, so `menu::render` cannot be unit-tested at all, and no amount of
+  restructuring will change that. This is *why* `menu.rs` is split the way it
+  is: every decision (which sections appear, what each label says, which song
+  a jump targets) lives in `menu::model` and `MenuModel`'s `show_*_section`
+  methods, which are pure and tested, leaving `render` as untested but
+  decision-free item construction. Putting a condition back into `render`
+  silently drops it out of test coverage.
+- **Don't add `muda` as a direct dependency.** `tray_icon::menu` re-exports it
+  wholesale, so nothing needs it in `Cargo.toml` — and declaring it there lets
+  Cargo resolve a second muda version independently of tray-icon's. Since
+  muda's menu-event handling is process-global, that failure mode is menu
+  clicks silently no longer arriving, which is a miserable thing to debug. It
+  was a direct dependency until the post-review cleanup; the removal is
+  deliberate.
 
 ## `PlayerSnapshot` and `PlaylistCache` are separate, independently refreshed
 
@@ -146,6 +162,67 @@ Reloading the playlist cache on `StoredPlaylist` also covers the app's own
 `playlistadd` writes, so an "Add to" click needs no manual cache patching —
 one mutation path that can't drift out of sync.
 
+## Album traversal: two numbers that look arbitrary but aren't
+
+Both were derived by measuring the real library on 2026-07-27 (28,928 tracks,
+1,877 directories, 1,845 distinct album titles, 45 stored playlists). Don't
+"tune" either without re-measuring.
+
+**Albums are identified by parent directory, not by tags.** The obvious rule —
+group by `(album, albumartist)` — is wrong on this library: it merges
+`Peter Gabriel / Peter Gabriel`, which is genuinely *two different self-titled
+albums* (`[1984]` and `[2002]`), into one 30-track blob, and does the same to
+`The Clash [1999]` / `[2002]`. Directory grouping keeps them apart, needs no
+tags at all (4 tracks have no `album` tag, 30 have no `albumartist`), and is
+correct on every multi-disc album here, since all of them live in a single
+directory with continuous track numbering rather than `CD1/`/`CD2/`
+subdirectories. Known cost: 2 directories under `Unnmatched/` hold more than
+one album, so they read as a single long album. Accepted — 2 wrong in 1,877.
+
+**Album nav appears only inside a run of 5+ same-directory tracks.** The
+threshold separates album listening from track-oriented playlists, measured as
+the percentage of queue positions sitting in a same-directory run of at least
+5:
+
+| Playlist | tracks | in a run of ≥5 |
+|---|---|---|
+| rem_all | 210 | 100% |
+| hottest_100_best | 86 | 99% |
+| mashup_albums | 244 | 97% |
+| Beatles_best | 61 | 90% |
+| My Top Rated | 2,734 | 18% |
+| Five stars | 444 | 5% |
+| mellow_2024 | 144 | 4% |
+
+The gap between 90% and 18% is wide enough that anything from 5 to 7 behaves
+the same; 4 starts letting shuffle-ish playlists through. Read the rule as
+*"am I inside an album block right now"*, not *"is this queue album-ordered"* —
+when `My Top Rated` reaches its one 37-track album run, showing album nav is
+correct, not a false positive.
+
+`random` also hides album nav, because MPD's random mode plays the queue in a
+random *order* while leaving queue order itself untouched — so queue-order
+jumps would send you somewhere unrelated to what plays next.
+
+## Menu glyphs are pinned to text presentation
+
+Every menu glyph carries a `U+FE0E` variation selector (`"\u{23EF}\u{FE0E}"`
+and friends). Without it macOS renders these codepoints as wide colour emoji,
+which look wrong against the menu-bar font weight. Album nav deliberately uses
+*doubled* arrows (`⏮⏮`/`⏭⏭`) rather than `⏪`/`⏩`: the fast-forward glyphs
+default to colour-emoji presentation, so they'd depend on `U+FE0E` actually
+being honoured to look consistent, whereas doubling a glyph that already
+renders correctly does not.
+
+The doubled `⏮⏮` is used for *both* states of the prev item ("Start of Album"
+and "Prev Album: …") on purpose — the icon stays put while only the label
+changes, so the row doesn't appear to flicker between two different items as
+you move through an album.
+
+Album names in these labels are truncated to 40 chars (159 of 1,845 titles are
+longer; the longest is 192), applied to the name alone so the `Next Album: `
+prefix is never pushed off.
+
 ## Two different icons, don't conflate them
 
 - The **tray title is text-only** (`TrayIconBuilder::with_title`) — the track
@@ -156,8 +233,10 @@ one mutation path that can't drift out of sync.
 
 ## Verification performed
 
-v1 was verified manually against real MPD, not by an automated integration
-harness (deliberately — see the README's note on scope):
+Verified manually against real MPD, not by an automated integration harness
+(deliberately — see the README's note on scope).
+
+v1:
 
 - Menu actions: play/pause, next, clear.
 - Resilience: killed and restarted MPD mid-session, confirming
@@ -166,6 +245,21 @@ harness (deliberately — see the README's note on scope):
 - URL scheme end-to-end via real `open 'mpdcontrol://...'` links once packaged
   and installed: a native command (`toggle`), a quoted-path recursive `add`
   (the exact example above), and an `mpc`-fallback command (`volume 50`).
+
+v2 (playlist membership, album traversal, icons, paused indicator) was
+similarly walked through live against the real library. **That pass earned its
+keep — it found two bugs the 70-test unit suite could not**, both needing real
+MPD state to reproduce:
+
+- A stored playlist listing the same song twice (`Five stars.m3u` does, for
+  Lorde's "Royals") showed that playlist's name twice under "In playlists".
+  Fixed by sorting and deduping each song's membership list.
+- Toggling `random` mid-album did nothing until `Subsystem::Options` was
+  handled — MPD reports `random`/`repeat`/etc. there, not on `Player`.
+
+Both are the same shape: an assumption about MPD's real-world behaviour that
+looked obviously true and wasn't. Budget for a live pass on anything new that
+touches MPD state.
 
 `tray-icon`'s known cosmetic quirks (icon rendering, an occasional double icon
 on some macOS versions) were not encountered on the macOS version in use.

@@ -197,7 +197,7 @@ async fn fetch_queue(client: &Client) -> Result<Vec<SongInQueue>> {
 /// name into one song's membership entry more than once.
 ///
 /// Also validates `key_playlists` against the names MPD actually returned,
-/// warning on any that don't resolve (spec §3) — the "Add to" submenu omits
+/// warning on any that don't resolve — the "Add to" submenu omits
 /// these, decided upstream in `main.rs` using `PlaylistCache::names`, not
 /// here or in `menu::model`.
 async fn load_playlist_cache(client: &Client, key_playlists: &[String]) -> Result<PlaylistCache> {
@@ -242,8 +242,8 @@ async fn load_playlist_cache(client: &Client, key_playlists: &[String]) -> Resul
 }
 
 /// Loads the playlist cache, warning and falling back to an empty cache on
-/// failure rather than propagating — per spec §4.2, the menu should render
-/// with empty membership rather than fail outright.
+/// failure rather than propagating — the menu should render with empty
+/// membership rather than fail outright.
 async fn load_playlist_cache_or_warn(client: &Client, key_playlists: &[String]) -> PlaylistCache {
     load_playlist_cache(client, key_playlists)
         .await

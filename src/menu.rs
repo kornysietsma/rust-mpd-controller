@@ -18,7 +18,7 @@ pub struct QueueEntry {
     pub id: u64,
 }
 
-/// A song's album identity (spec §5.1): two queue entries are the same album
+/// A song's album identity: two queue entries are the same album
 /// iff they share a parent directory. Chosen over the `album`/`albumartist`
 /// tags, which merge genuinely distinct self-titled albums into one blob.
 fn album_key(url: &str) -> Option<&str> {
@@ -32,7 +32,7 @@ fn same_album(a: &str, b: &str) -> bool {
 }
 
 /// The maximal contiguous range of queue positions, containing `current_pos`,
-/// that share `current_pos`'s album (spec §5.3/§5.4). Scans outward from
+/// that share `current_pos`'s album. Scans outward from
 /// `current_pos` only, so cost is O(album length), not O(queue). Returns
 /// `None` for an empty queue or an out-of-bounds position.
 fn album_run(queue: &[QueueEntry], current_pos: usize) -> Option<(usize, usize)> {
@@ -62,7 +62,7 @@ fn show_album_nav(random: bool, run_len: usize) -> bool {
 const ALBUM_NAV_MIN_RUN: usize = 5;
 const ALBUM_NAME_MAX_CHARS: usize = 40;
 
-/// An album-navigation jump target (spec §5.4). `label` is the complete row
+/// An album-navigation jump target. `label` is the complete row
 /// text, so `render` and click dispatch never branch on which of the prev-item
 /// states produced it.
 #[derive(Debug, PartialEq, Eq)]
@@ -87,7 +87,7 @@ fn album_display_name(entry: &QueueEntry) -> String {
     truncate(&name, ALBUM_NAME_MAX_CHARS)
 }
 
-/// Next-album target (spec §5.4): the run immediately following the current
+/// Next-album target: the run immediately following the current
 /// one, if any. `None` when there's no current run (empty/out-of-bounds
 /// queue position) or the current run is the last one.
 fn next_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump> {
@@ -99,7 +99,7 @@ fn next_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
     })
 }
 
-/// Prev/Start-of-Album target (spec §5.4): two states depending on where
+/// Prev/Start-of-Album target: two states depending on where
 /// `current_pos` sits within its run.
 /// - Track 2+ (`current_pos > run_start`): jump to the run's own first
 ///   entry, labelled `"Start of Album"` (no name — the run is already
@@ -130,7 +130,7 @@ fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
 
 const EMPTY_QUEUE_ICON: &str = "♫";
 const DISCONNECTED_ICON: &str = "🔇";
-// Pinned to text presentation with U+FE0E (spec §7), as the menu glyphs below
+// Pinned to text presentation with U+FE0E, as the menu glyphs below
 // are, so it renders monochrome and narrow rather than as wide colour emoji.
 const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
 const TITLE_MAX_CHARS: usize = 25;
@@ -173,7 +173,7 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
 /// occurred so a disabled dropdown item can show it in full. When `state` is
 /// `Paused`, the paused glyph is prefixed onto `title` *after* truncation, so
 /// it sits outside the 25-char budget and never affects where the text is
-/// cut (spec §7.1). `full_text` (the untruncated dropdown text) never gets
+/// cut. `full_text` (the untruncated dropdown text) never gets
 /// the prefix — it's not the tray title.
 pub fn track_display(
     state: PlayState,
@@ -222,7 +222,7 @@ pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
     }
 }
 
-/// "In playlists" contents (spec §6.1): **all** playlists containing the
+/// "In playlists" contents: **all** playlists containing the
 /// current song, not just the configured `key_playlists`.
 fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
     let mut names = playlists_for_url.to_vec();
@@ -230,10 +230,10 @@ fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
     names
 }
 
-/// "Add to" contents (spec §6.2): `key_playlists` minus whichever already
+/// "Add to" contents: `key_playlists` minus whichever already
 /// contain the song, preserving config order. Trusts `key_playlists` to
 /// already be validated against real MPD playlist names — whether an entry
-/// corresponds to a real playlist is decided upstream (spec §3, the caller
+/// corresponds to a real playlist is decided upstream (the caller
 /// filters against `PlaylistCache::names` before this point), not here.
 fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<String> {
     key_playlists
@@ -245,7 +245,7 @@ fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<St
 
 /// Both album-nav targets, or `(None, None)` when the rows should be hidden:
 /// nothing playing, empty queue, position out of bounds, `random` on, or the
-/// run shorter than the threshold (spec §5.3).
+/// run shorter than the threshold.
 fn album_nav(
     state: PlayState,
     random: bool,
@@ -268,7 +268,7 @@ fn album_nav(
 }
 
 /// Everything needed to render the dropdown menu, computed from primitives so
-/// it's unit-testable without a live MPD connection (spec §8.1). Carries no
+/// it's unit-testable without a live MPD connection. Carries no
 /// tray title — that's set independently via `Display`.
 pub struct MenuModel {
     pub full_text: Option<String>,
@@ -323,7 +323,7 @@ pub struct CurrentTrack<'a> {
 }
 
 /// Pure: assembles a `MenuModel` from already-extracted primitives. All the
-/// rules in spec §5 and §6 live here; `render` makes no further decisions.
+/// album-nav and playlist rules live here; `render` makes no further decisions.
 pub fn model(
     state: PlayState,
     random: bool,
@@ -351,7 +351,7 @@ pub fn model(
     }
 }
 
-// All glyphs are pinned to text presentation with U+FE0E (spec §7) so they
+// All glyphs are pinned to text presentation with U+FE0E so they
 // render monochrome and narrow, matching the menu-bar font weight, rather
 // than falling back to wide colour emoji.
 const PLAY_PAUSE_ICON: &str = "\u{23EF}\u{FE0E}";
@@ -360,7 +360,7 @@ const CLEAR_ICON: &str = "\u{23F9}\u{FE0E}";
 const PREV_ALBUM_ICON: &str = "\u{23EE}\u{FE0E}\u{23EE}\u{FE0E}";
 const NEXT_ALBUM_ICON: &str = "\u{23ED}\u{FE0E}\u{23ED}\u{FE0E}";
 
-// The two dynamic menu-id families (spec §8.2). Both the builders and the
+// The two dynamic menu-id families. Both the builders and the
 // `strip_*` parsers live here so `main.rs` dispatch never has to know the wire
 // format — otherwise the halves sit in different modules with nothing keeping
 // them in step.
@@ -389,11 +389,11 @@ pub fn strip_addto_id(id: &str) -> Option<&str> {
     id.strip_prefix(ADDTO_ID_PREFIX)
 }
 
-/// Turns an already-computed `MenuModel` into `muda` items. Every rule from
-/// spec §5/§6 lives in `model()` and `MenuModel`'s `show_*_section` methods,
-/// which is what keeps them testable: **this function cannot be unit-tested**,
-/// because `muda::Menu::new` panics off the main thread and `cargo test` runs
-/// tests on spawned threads. Keep decisions out of here.
+/// Turns an already-computed `MenuModel` into `muda` items. Every decision
+/// lives in `model()` and `MenuModel`'s `show_*_section` methods, which is
+/// what keeps them testable: **this function cannot be unit-tested**, because
+/// `muda::Menu::new` panics off the main thread and `cargo test` runs tests on
+/// spawned threads. Keep decisions out of here.
 pub fn render(model: &MenuModel) -> Result<Menu> {
     let menu = Menu::new();
 
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn album_key_groups_by_directory() {
         // Every multi-disc album in this library lives in one directory with
-        // continuous track numbering (spec §2.1), so directory grouping
+        // continuous track numbering, so directory grouping
         // handles them with no CD1/CD2 special-casing.
         assert_eq!(
             album_key("Beatles/Abbey Road/01 Come Together.mp3"),
@@ -850,7 +850,7 @@ mod tests {
             "album".to_string(),
         ];
         // Config order, deliberately not the alphabetical order "In playlists"
-        // uses (spec §6.2).
+        // uses.
         assert_eq!(add_to_list(&[], &key_playlists), key_playlists);
     }
 
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn sections_are_hidden_when_they_would_be_empty() {
         // Both false means `render` emits no separator for either section —
-        // spec §6's "never two adjacent separators".
+        // the "never two adjacent separators" rule.
         let model = model_with(None, None, vec![], vec![]);
         assert!(!model.show_album_section());
         assert!(!model.show_track_section());
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn addto_id_round_trips_name_containing_a_colon() {
-        // Playlist names may contain ':' (spec §8.2) — the parser must recover
+        // Playlist names may contain ':' — the parser must recover
         // the whole remainder, not just up to the first colon.
         let name = "Side A: Favourites";
         assert_eq!(strip_addto_id(&addto_item_id(name)), Some(name));

@@ -170,7 +170,14 @@ cargo test
 ```
 
 Unit tests only, covering the pure bits that are easy to get wrong: URL decode
-→ tokenise → command parse, config loading and defaults, and menu display
-logic (title truncation, icon/state selection). There is no GUI or integration
-test harness — those paths were verified by hand (see
+→ tokenise → command parse, config loading and defaults, menu display logic
+(title truncation, paused prefix, icon/state selection), album traversal
+(run detection, jump targets, labels), playlist membership, and menu-id
+round-tripping.
+
+There is no GUI or integration test harness. Anything touching `muda` is
+structurally untestable — `muda::Menu` can only be built on the main thread,
+and `cargo test` runs on spawned threads — which is why menu *decisions* live
+in `menu::model` rather than `menu::render`. Those paths, and everything
+needing a live MPD, were verified by hand (see
 [docs/implementation-details.md](docs/implementation-details.md)).
