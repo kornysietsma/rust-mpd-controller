@@ -61,6 +61,13 @@ Known gotchas already found this way, so you don't have to re-derive them:
   (confirmed live: `Five stars.m3u` does, for Lorde's "Royals") — this one
   *does* need dedup. Sort the playlist names per song, then `Vec::dedup()`
   (adjacent-only, hence the sort first) when building membership.
+- `arboard`'s macOS backend has **no `Drop` impl** — a `Clipboard` is just
+  `NSPasteboard::generalPasteboard`, so constructing one per copy is correct,
+  not wasteful, and there's nothing to keep alive afterwards. Its
+  "clipboard empties when the owning process exits" caveat is X11-only.
+  `Clipboard::new()` can still fail (`ClipboardNotSupported`) when
+  `generalPasteboard` returns NULL, which its source says happens under
+  launchd in some daemon modes — handle the error, don't `unwrap`.
 - MPD reports `random`/`repeat`/`single`/`consume`/crossfade/replay-gain
   changes on `Subsystem::Options`, **not** `Player` — confirmed live when
   toggling `random` mid-album-run had no effect on the menu until `Options`

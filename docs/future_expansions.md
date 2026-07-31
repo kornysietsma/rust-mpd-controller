@@ -17,6 +17,16 @@ architectural change needed.
 - **Sticker metadata** — read/write MPD's sticker database (e.g. ratings),
   surfaced through the menu and/or the URL scheme.
 
+## Deferred URL-scheme features
+
+- **A compound "play this now" command.** The `mpcuri://` app this replaced
+  ran its payload through a shell, so an Obsidian link could say
+  `clear && add "<album>" && play`. This app deliberately has no shell — one
+  command per URI — so that idiom is gone, and gone quietly: `mpc` just
+  receives a literal `&&` and does nothing. If it turns out to be missed, the
+  shape is a native `playnow <path>` in `command.rs` (clear + add + play in
+  one dispatch), *not* re-introducing shell semantics into the URL payload.
+
 ## If a CLI is ever genuinely needed
 
 Recorded only so the door isn't accidentally closed. There is deliberately no

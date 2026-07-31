@@ -19,13 +19,13 @@ One binary, one long-running process, one crate. Both entry points — the menu
 bar and the URL scheme — are handled inside the same process, which owns the
 MPD connection and any future in-memory state.
 
-| Module          | Responsibility                                            |
-|-----------------|-----------------------------------------------------------|
-| `src/main.rs`   | startup, `tao` event loop, tray icon + menu, URL handling  |
-| `src/mpd.rs`    | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
-| `src/command.rs`| decoded command string → dispatch against MPD              |
-| `src/menu.rs`   | pure menu model (album nav, playlist membership, copy URIs) + thin render, title formatting/truncation |
-| `src/config.rs` | TOML config load + defaults                                |
+| Module             | Responsibility                                         |
+|--------------------|--------------------------------------------------------|
+| `src/main.rs`      | startup, `tao` event loop, tray icon + menu, URL handling |
+| `src/mpd.rs`       | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
+| `src/command.rs`   | decoded command string → dispatch against MPD          |
+| `src/menu.rs`      | pure menu model (album nav, playlist membership, copy URIs) + thin render, title formatting/truncation |
+| `src/config.rs`    | TOML config load + defaults                            |
 | `src/clipboard.rs` | pasteboard write (`arboard`), for the copy-URI menu rows |
 
 `command.rs` is the shared dispatch path used by *both* menu clicks and the
@@ -44,7 +44,9 @@ loop on the **main thread**, while `mpd_client` is async on **tokio**:
    separate command channel is needed.
 4. Commands (menu click or URL) clone that `Client` and run as tokio tasks, so
    execution never blocks the event loop. If MPD is disconnected, the action
-   is a logged no-op rather than an error.
+   is a logged no-op rather than an error. The one exception is the copy-URI
+   rows: no MPD involved, and a pasteboard write is fast enough to do inline
+   on the main thread.
 
 The title and menu refresh **only when MPD state actually changes** —
 idle-driven, never polled.
@@ -150,6 +152,21 @@ mpdcontrol://add%20%22Album%2FPath%22
 `add <path>` is recursive, like `mpc add`. Any command not natively
 implemented (`toggle`, `next`, `clear`, `add`) is shelled out to the system
 `mpc` binary verbatim, covering the long tail of MPD commands.
+
+**One command per URI.** There's no shell in the path — unrecognized tokens
+become `mpc`'s `argv` — so `clear && add "..." && play` doesn't chain, it
+hands `mpc` a literal `&&` and silently does nothing useful. (The predecessor
+to this app, an `mpcuri://` Platypus script, did run its payload through a
+shell; links written for it need splitting up.)
+
+The menu's `⧉` rows are the easy way to get a correctly-encoded URI for
+what's playing, rather than assembling one by hand.
+
+> **Known issue:** if the app isn't already running, macOS launches it to
+> handle the link, and a URL arriving in that first instant can be dropped
+> while the MPD connection is still coming up (logged as `ignoring url
+> command: not connected to MPD`). Clicking again works. See
+> `docs/implementation-details.md` for the fix if it starts to annoy.
 
 > **Known trade-off (accepted):** this pass-through means *any* `mpdcontrol://`
 > link — including one embedded in a web page — can invoke any command,
