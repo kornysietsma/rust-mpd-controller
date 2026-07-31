@@ -31,17 +31,13 @@ use url::Url;
 
 use crate::mpd::MpdEvent;
 
-/// The scheme registered for this app: `mpdcontrol://...`. Both ends live off
-/// this: `decode_command_from_url` below reads it, and `menu::add_uri` writes
-/// it into the URIs the copy rows put on the clipboard.
 const URL_SCHEME: &str = "mpdcontrol";
 
 /// Extracts and percent-decodes the command payload from an `mpdcontrol://`
 /// URL. `mpdcontrol` is a non-special URL scheme, so per the
 /// WHATWG URL parsing rules the `url` crate implements, everything after
 /// `//` lands in the (still percent-encoded) opaque host component, not the
-/// path — confirmed against `mpdcontrol://add%20%22Album%2FPath%22`, which
-/// parses to host `"add%20%22Album%2FPath%22"` with an empty path.
+/// path.
 fn decode_command_from_url(url: &Url) -> Result<String> {
     if url.scheme() != URL_SCHEME {
         return Err(anyhow!(
@@ -111,7 +107,7 @@ where
 
 /// Extracts the primitives `menu::model` needs from MPD's queue — kept here
 /// rather than in `menu.rs` so the pure model layer never depends on
-/// `mpd_client` types, which can't be constructed in tests. See `AGENTS.md`.
+/// `mpd_client` types, which can't be constructed in tests.
 fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
     queue
         .iter()
@@ -341,6 +337,25 @@ mod tests {
     #[test]
     fn rejects_unexpected_scheme() {
         let url = Url::parse("https://example.com").unwrap();
+        assert!(decode_command_from_url(&url).is_err());
+    }
+
+    #[test]
+    fn rejects_url_with_no_command_payload() {
+        // Right scheme, empty payload — `Url::parse` accepts both of these and
+        // reports no host, so the guard here is the only thing between a
+        // mangled link and an empty command reaching `dispatch`.
+        for empty in ["mpdcontrol://", "mpdcontrol:///"] {
+            let url = Url::parse(empty).unwrap();
+            assert!(decode_command_from_url(&url).is_err(), "{empty}");
+        }
+    }
+
+    #[test]
+    fn rejects_payload_that_is_not_valid_utf8() {
+        // `Url::parse` keeps the opaque host's escapes intact, so invalid UTF-8
+        // survives parsing and only fails when we percent-decode it.
+        let url = Url::parse("mpdcontrol://%FF%FE").unwrap();
         assert!(decode_command_from_url(&url).is_err());
     }
 }

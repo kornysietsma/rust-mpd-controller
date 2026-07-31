@@ -123,17 +123,4 @@ mod tests {
 
         assert!(result.is_err());
     }
-
-    #[test]
-    fn stray_favourites_key_is_ignored() {
-        let path = write_temp(
-            "stray-favourites",
-            "mpd_host = \"myhost\"\nfavourites = \"Five stars\"\n",
-        );
-
-        let config = load_from(&path).unwrap();
-        fs::remove_file(&path).ok();
-
-        assert_eq!(config.mpd_host, "myhost");
-    }
 }

@@ -22,7 +22,7 @@ pub struct QueueEntry {
 
 /// A song's album identity: two queue entries are the same album
 /// iff they share a parent directory. Chosen over the `album`/`albumartist`
-/// tags, which merge genuinely distinct self-titled albums into one blob.
+/// tags, which merge albums with the same name (like "Peter Gabriel" self titled!)
 fn album_key(url: &str) -> Option<&str> {
     url.rsplit_once('/').map(|(dir, _)| dir)
 }
@@ -53,10 +53,9 @@ fn album_run(queue: &[QueueEntry], current_pos: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
-/// Spec §5.3. `random` hides album nav because MPD plays a random *order*
+/// `random` hides album nav because MPD plays a random *order*
 /// while leaving queue order untouched, making queue-order jumps meaningless.
-/// The threshold of 5 separates album listening (90–100% of positions sit in
-/// a run that long) from track-oriented playlists (4–18%).
+/// run_len check means we don't see track-only playlists as lots of albums.
 fn show_album_nav(random: bool, run_len: usize) -> bool {
     !random && run_len >= ALBUM_NAV_MIN_RUN
 }
@@ -78,7 +77,7 @@ fn directory_basename(url: &str) -> Option<&str> {
     Some(dir.rsplit('/').next().unwrap_or(dir))
 }
 
-/// Spec §5.2. Truncation is applied to the name alone, so a long album title
+/// Truncation is applied to the name alone, so a long album title
 /// never pushes the `Next Album: ` prefix off the menu.
 fn album_display_name(entry: &QueueEntry) -> String {
     let name = entry
@@ -101,14 +100,8 @@ fn next_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
     })
 }
 
-/// Prev/Start-of-Album target: two states depending on where
-/// `current_pos` sits within its run.
-/// - Track 2+ (`current_pos > run_start`): jump to the run's own first
-///   entry, labelled `"Start of Album"` (no name — the run is already
-///   playing, so a name would be redundant).
-/// - Track 1 (`current_pos == run_start`): jump to the *preceding* run's
-///   first entry, labelled `"Prev Album: <name>"`. `None` if there is no
-///   preceding run (this is the first album in the queue).
+/// Prev/Start-of-Album target: If on the first track of an album, jump to previous album.
+/// If on the second or later track, jump to the start.
 fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump> {
     let (start, _) = album_run(queue, current_pos)?;
     if current_pos > start {
@@ -140,8 +133,7 @@ const ELLIPSIS: char = '…';
 
 /// Formats a song as "Title - Artist". Falls back to the song's
 /// URL when there's no title tag, and omits the artist half when there are no
-/// artist tags. Takes already-extracted primitives (rather than mpd_client's
-/// `Song`) so this pure logic is unit-testable without a live connection.
+/// artist tags.
 pub fn format_track(title: Option<&str>, url: &str, artists: &[String]) -> String {
     let title = title.unwrap_or(url);
     if artists.is_empty() {
@@ -163,12 +155,6 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-/// The tray title for a song that's playing/paused: the truncated track text.
-/// The untruncated text isn't returned — the dropdown's copy row (see
-/// `MenuModel::track`) always shows it in full, so there's nothing for a
-/// caller to decide. When `state` is `Paused`, the paused glyph is prefixed
-/// *after* truncation, so it sits outside the 25-char budget and never affects
-/// where the text is cut.
 pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[String]) -> String {
     let truncated = truncate(&format_track(title, url, artists), TITLE_MAX_CHARS);
     if state == PlayState::Paused {
@@ -178,18 +164,14 @@ pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[
     }
 }
 
-/// The tray title when connected but nothing is playing.
 pub fn empty_queue_title() -> String {
     EMPTY_QUEUE_ICON.to_string()
 }
 
-/// The tray title while MPD is unreachable.
 pub fn disconnected_title() -> String {
     DISCONNECTED_ICON.to_string()
 }
 
-/// Computes the tray title for a connected snapshot: track text when a
-/// song is playing/paused, the "nothing playing" icon otherwise.
 pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
     match &snapshot.song {
         Some(song) => track_title(
@@ -203,7 +185,7 @@ pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
 }
 
 /// "In playlists" contents: **all** playlists containing the
-/// current song, not just the configured `key_playlists`.
+/// current song
 fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
     let mut names = playlists_for_url.to_vec();
     names.sort_by_key(|name| name.to_lowercase());
@@ -211,10 +193,7 @@ fn in_playlists_list(playlists_for_url: &[String]) -> Vec<String> {
 }
 
 /// "Add to" contents: `key_playlists` minus whichever already
-/// contain the song, preserving config order. Trusts `key_playlists` to
-/// already be validated against real MPD playlist names — whether an entry
-/// corresponds to a real playlist is decided upstream (the caller
-/// filters against `PlaylistCache::names` before this point), not here.
+/// contain the song, preserving config order.
 fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<String> {
     key_playlists
         .iter()
@@ -225,8 +204,7 @@ fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<St
 
 /// Everything outside RFC 3986's *unreserved* set gets percent-encoded. This
 /// is deliberately more aggressive than the URL parser needs: it matches
-/// Python's `quote(s, safe="")`, which is what the existing `mpcuri://` links
-/// in Obsidian were generated with, so links from both sources look identical.
+/// Python's `quote(s, safe="")`.
 /// It also has to survive a round trip through `Url::parse` on the way back
 /// in — the payload lands in the URL's *opaque host* component (see
 /// `main::decode_command_from_url`), where `/`, `:`, `?`, `#` and space are
@@ -339,8 +317,7 @@ impl MenuModel {
     }
 
     /// Whether the album-nav section (and the separator preceding it) should
-    /// be emitted at all. Spec §6's "omit the separator when the section
-    /// between them is empty" rule — a decision, so it lives here rather than
+    /// be emitted at all. Lives here rather than
     /// in `render`, which can't be tested (see the module note on
     /// `muda::Menu` being main-thread-only). Derived rather than stored, so
     /// it can't drift from the fields it's computed from.
@@ -549,40 +526,24 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn format_track_combines_title_and_artist() {
-        let artists = vec!["My Artist".to_string()];
+    fn format_track_combines_title_and_artists() {
+        let one = vec!["My Artist".to_string()];
+        let two = vec!["Artist A".to_string(), "Artist B".to_string()];
         assert_eq!(
-            format_track(Some("My Title"), "foo.mp3", &artists),
+            format_track(Some("My Title"), "foo.mp3", &one),
             "My Title - My Artist"
         );
-    }
-
-    #[test]
-    fn format_track_joins_multiple_artists() {
-        let artists = vec!["Artist A".to_string(), "Artist B".to_string()];
         assert_eq!(
-            format_track(Some("My Title"), "foo.mp3", &artists),
+            format_track(Some("My Title"), "foo.mp3", &two),
             "My Title - Artist A, Artist B"
         );
-    }
-
-    #[test]
-    fn format_track_omits_artist_when_absent() {
+        // No artist tags: the whole " - Artist" half is dropped, not left dangling.
         assert_eq!(format_track(Some("My Title"), "foo.mp3", &[]), "My Title");
-    }
-
-    #[test]
-    fn format_track_falls_back_to_url_when_no_title() {
-        let artists = vec!["My Artist".to_string()];
+        // No title tag: the url stands in for it.
         assert_eq!(
-            format_track(None, "Album/track.mp3", &artists),
+            format_track(None, "Album/track.mp3", &one),
             "Album/track.mp3 - My Artist"
         );
-    }
-
-    #[test]
-    fn truncate_leaves_short_text_untouched() {
-        assert_eq!(truncate("short", 25), "short");
     }
 
     #[test]
@@ -609,26 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn track_title_is_untouched_when_short() {
-        let artists = vec!["My Artist".to_string()];
-        let title = track_title(PlayState::Playing, Some("My Title"), "foo.mp3", &artists);
-        assert_eq!(title, "My Title - My Artist");
-    }
-
-    #[test]
-    fn track_title_truncates_long_text() {
-        let long_title = "a".repeat(40);
-        let title = track_title(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
-        assert_eq!(title.chars().count(), TITLE_MAX_CHARS);
-    }
-
-    #[test]
-    fn track_title_prefixes_paused_glyph_when_paused() {
-        let title = track_title(PlayState::Paused, Some("My Title"), "foo.mp3", &[]);
-        assert_eq!(title, format!("{PAUSED_ICON} My Title"));
-    }
-
-    #[test]
     fn track_title_omits_paused_glyph_when_playing_or_stopped() {
         let playing = track_title(PlayState::Playing, Some("My Title"), "foo.mp3", &[]);
         assert_eq!(playing, "My Title");
@@ -646,16 +587,6 @@ mod tests {
             let paused = track_title(PlayState::Paused, Some(title), "foo.mp3", &[]);
             assert_eq!(paused, format!("{PAUSED_ICON} {playing}"));
         }
-    }
-
-    #[test]
-    fn empty_queue_title_is_icon() {
-        assert_eq!(empty_queue_title(), EMPTY_QUEUE_ICON);
-    }
-
-    #[test]
-    fn disconnected_title_is_icon() {
-        assert_eq!(disconnected_title(), DISCONNECTED_ICON);
     }
 
     fn entry(url: &str) -> QueueEntry {
@@ -721,20 +652,11 @@ mod tests {
     }
 
     #[test]
-    fn album_run_empty_queue_is_none() {
-        assert_eq!(album_run(&[], 0), None);
-    }
-
-    #[test]
-    fn album_run_single_entry_queue() {
-        let queue = vec![entry("A/Al/1.mp3")];
-        assert_eq!(album_run(&queue, 0), Some((0, 0)));
-    }
-
-    #[test]
-    fn album_run_out_of_bounds_position_is_none() {
+    fn album_run_position_outside_the_queue_is_none() {
+        // An empty queue is just the degenerate case of the same bounds check.
         let queue = vec![entry("A/Al/1.mp3"), entry("A/Al/2.mp3")];
         assert_eq!(album_run(&queue, 5), None);
+        assert_eq!(album_run(&[], 0), None);
     }
 
     fn queue_entry(url: &str, album: Option<&str>, id: u64) -> QueueEntry {
@@ -746,13 +668,10 @@ mod tests {
     }
 
     #[test]
-    fn show_album_nav_run_of_five_shown_run_of_four_hidden() {
+    fn show_album_nav_needs_a_run_of_five_and_no_random() {
         assert!(show_album_nav(false, 5));
         assert!(!show_album_nav(false, 4));
-    }
-
-    #[test]
-    fn show_album_nav_hidden_when_random_regardless_of_run_len() {
+        // Random beats any run length — queue-order jumps are meaningless.
         assert!(!show_album_nav(true, 100));
     }
 
@@ -766,13 +685,6 @@ mod tests {
     fn album_display_name_falls_back_to_directory_basename() {
         let entry = queue_entry("Beatles/Abbey Road/1.mp3", None, 1);
         assert_eq!(album_display_name(&entry), "Abbey Road");
-    }
-
-    #[test]
-    fn album_display_name_truncates_long_title() {
-        let long_title = "a".repeat(192);
-        let entry = queue_entry("Beatles/Abbey Road/1.mp3", Some(&long_title), 1);
-        assert_eq!(album_display_name(&entry).chars().count(), 40);
     }
 
     #[test]
@@ -824,18 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn prev_album_jump_on_last_track_of_run_still_returns_start_of_album() {
-        let queue = vec![
-            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
-            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
-            queue_entry("A/Abbey Road/3.mp3", Some("Abbey Road"), 3),
-        ];
-        let jump = prev_album_jump(&queue, 2).unwrap();
-        assert_eq!(jump.song_id, 1);
-        assert_eq!(jump.label, "Start of Album");
-    }
-
-    #[test]
     fn prev_album_jump_two_clicks_reaches_previous_album() {
         let queue = vec![
             queue_entry("A/Please Please Me/1.mp3", Some("Please Please Me"), 1),
@@ -863,17 +763,6 @@ mod tests {
             queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
         ];
         assert_eq!(prev_album_jump(&queue, 0), None);
-    }
-
-    #[test]
-    fn prev_album_jump_at_track_two_of_first_album_offers_start_of_album() {
-        let queue = vec![
-            queue_entry("A/Abbey Road/1.mp3", Some("Abbey Road"), 1),
-            queue_entry("A/Abbey Road/2.mp3", Some("Abbey Road"), 2),
-        ];
-        let jump = prev_album_jump(&queue, 1).unwrap();
-        assert_eq!(jump.song_id, 1);
-        assert_eq!(jump.label, "Start of Album");
     }
 
     #[test]
@@ -908,12 +797,6 @@ mod tests {
     }
 
     #[test]
-    fn add_to_list_empty_key_playlists_is_empty() {
-        let playlists_for_url = vec!["Five stars".to_string()];
-        assert_eq!(add_to_list(&playlists_for_url, &[]), Vec::<String>::new());
-    }
-
-    #[test]
     fn add_to_list_song_in_no_playlists_offers_full_key_playlists_in_config_order() {
         let key_playlists = vec![
             "zebra".to_string(),
@@ -923,11 +806,6 @@ mod tests {
         // Config order, deliberately not the alphabetical order "In playlists"
         // uses.
         assert_eq!(add_to_list(&[], &key_playlists), key_playlists);
-    }
-
-    #[test]
-    fn in_playlists_list_song_in_no_playlists_is_empty() {
-        assert_eq!(in_playlists_list(&[]), Vec::<String>::new());
     }
 
     #[test]

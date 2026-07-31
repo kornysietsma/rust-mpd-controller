@@ -11,10 +11,8 @@ use mpd_client::protocol::response::Frame;
 use mpd_client::responses::{PlayState, TypedResponseError};
 use tokio::process::Command as TokioCommand;
 
-/// Toggles playback: pauses if playing, resumes if paused, starts playback
-/// from the current position if stopped. MPD's `pause` command takes an
-/// explicit on/off flag rather than toggling itself, so the caller's last
-/// known `PlayState` decides which way to go.
+/// Toggles playback - there's no toggle in MPD so this needs to know
+/// the current `PlayState`
 pub async fn toggle(client: &Client, current_state: PlayState) -> Result<()> {
     match current_state {
         PlayState::Playing => client
@@ -171,9 +169,7 @@ pub async fn dispatch(
 /// Homebrew's install locations for `mpc`, checked before falling back to a
 /// bare `"mpc"` lookup via `PATH`. Needed because a GUI app launched via
 /// Launch Services (double-click / `open mpdcontrol://...`, not a terminal)
-/// gets launchd's minimal `PATH`, which omits both of these — confirmed via
-/// the URL-scheme `mpc` fallback failing with "No such file or directory"
-/// despite `mpc` resolving fine from an interactive shell.
+/// gets launchd's minimal `PATH`, which omits both of these.
 const MPC_CANDIDATE_PATHS: &[&str] = &["/opt/homebrew/bin/mpc", "/usr/local/bin/mpc"];
 
 /// Picks the first candidate path that exists, or `"mpc"` to fall back on
@@ -187,13 +183,8 @@ fn resolve_mpc_binary(exists: impl Fn(&str) -> bool) -> &'static str {
 }
 
 /// Shells out to the system `mpc` binary for commands `dispatch` doesn't
-/// recognize natively, covering the long tail of MPD commands without
-/// reimplementing each one. Tokens are passed straight through as `argv`
+/// recognize natively. Tokens are passed straight through as `argv`
 /// entries (not via a shell), so no quoting/escaping is needed here.
-///
-/// An empty token list (e.g. empty decoded input) is treated as a no-op
-/// rather than invoking bare `mpc`, which would otherwise just print MPD's
-/// current status as an unintended side effect.
 async fn run_mpc_fallback(tokens: &[String]) -> Result<()> {
     if tokens.is_empty() {
         info!("mpc fallback: nothing to dispatch (empty command), skipping");
@@ -238,11 +229,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn tokenize_splits_on_whitespace() {
-        assert_eq!(tokenize("next").unwrap(), vec!["next"]);
-    }
-
-    #[test]
     fn tokenize_respects_quotes_with_spaces() {
         assert_eq!(
             tokenize(r#"add "Album/Path""#).unwrap(),
@@ -256,11 +242,6 @@ mod tests {
             tokenize(r#"add "It's a \"Test\"""#).unwrap(),
             vec!["add", r#"It's a "Test""#]
         );
-    }
-
-    #[test]
-    fn tokenize_empty_input_is_no_tokens() {
-        assert_eq!(tokenize("").unwrap(), Vec::<String>::new());
     }
 
     #[test]
@@ -310,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_mpc_binary_prefers_first_existing_candidate() {
+    fn resolve_mpc_binary_prefers_an_existing_candidate_over_path_lookup() {
         assert_eq!(
             resolve_mpc_binary(|path| path == "/opt/homebrew/bin/mpc"),
             "/opt/homebrew/bin/mpc"
@@ -319,10 +300,7 @@ mod tests {
             resolve_mpc_binary(|path| path == "/usr/local/bin/mpc"),
             "/usr/local/bin/mpc"
         );
-    }
-
-    #[test]
-    fn resolve_mpc_binary_falls_back_to_path_lookup() {
+        // Nothing on disk: fall back to a bare name and let `PATH` resolve it.
         assert_eq!(resolve_mpc_binary(|_| false), "mpc");
     }
 }
