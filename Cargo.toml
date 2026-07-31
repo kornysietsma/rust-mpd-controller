@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Korny Sietsma <korny@sietsma.com>"]
 readme = "README.md"
-# license = "MIT"  # https://spdx.org/licenses/
+license = "MIT"
 # categories = [] # https://crates.io/category_slugs
 # keywords = [] # free text
 

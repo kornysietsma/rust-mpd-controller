@@ -4,9 +4,41 @@ A macOS menu-bar widget for controlling a local [MPD](https://www.musicpd.org/)
 (Music Player Daemon) instance, plus a registered `mpdcontrol://` URL scheme
 for fire-and-forget commands from anywhere on the system.
 
-This is a personal tool. Testing and documentation rigour are intentionally
+> [!WARNING]  
+> This is a personal tool! I am sharing it in case others find the code useful, but it
+> is deliberately written just for me, it has no security guarantees - in fact
+> the URI scheme is quite risky if used without thought as it has no allow-list
+> for what it tries to send to MPD.
+
+I'm not planning to maintain this as an open-source tool, it's more of an example of
+how you can build personal tools so easily these days with AI tools, it's sometimes
+easier to just write the tool you want, than to hunt around for a tool that someone
+else maintains.
+
+> [!NOTE]
+> Most of this was written by Claude Code. I have applied a human-in-the-loop check
+> at all stages, it is not "vibe coded" - but nonetheless I haven't applied as much
+> rigour as I would have for commercial code.  If you don't like AI
+> written code, I suggest you look elsewhere.
+
+Testing and documentation rigour are intentionally
 light — enough to be reliable for daily personal use, not production-grade.
 
+## Main features
+
+This tool creates a macOS application `MpdController.app` which interacts with the MPD music player daemon running on the computer.
+
+It has two interfaces - a toolbar widget which shows currently playing track and album, and has play controls and some playlist integration.
+
+And it also implements a URI scheme so if you click a carefully crafted URI like `mpdcontrol://<command>` it passes the command to the same application for processing.
+
+## Other Docs
+
+- [docs/architecture.md](docs/architecture.md) — module breakdown, the
+  main-thread/tokio threading model (with a diagram), and why there's no GUI
+  test harness.
+- [docs/usage.md](docs/usage.md) — the menu bar walkthrough and the
+  `mpdcontrol://` URL scheme reference.
 - [docs/implementation-details.md](docs/implementation-details.md) — the
   non-obvious things that took real digging (macOS URL-scheme quirks, Dock
   icon, `PATH` under Launch Services, library sharp edges).
@@ -15,50 +47,21 @@ light — enough to be reliable for daily personal use, not production-grade.
 
 ## How it works
 
-One binary, one long-running process, one crate. Both entry points — the menu
-bar and the URL scheme — are handled inside the same process, which owns the
-MPD connection and any future in-memory state.
-
-| Module             | Responsibility                                         |
-|--------------------|--------------------------------------------------------|
-| `src/main.rs`      | startup, `tao` event loop, tray icon + menu, URL handling |
-| `src/mpd.rs`       | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
-| `src/command.rs`   | decoded command string → dispatch against MPD          |
-| `src/menu.rs`      | pure menu model (album nav, playlist membership, copy URIs) + thin render, title formatting/truncation |
-| `src/config.rs`    | TOML config load + defaults                            |
-| `src/clipboard.rs` | pasteboard write (`arboard`), for the copy-URI menu rows |
-
-`command.rs` is the shared dispatch path used by *both* menu clicks and the
-URL scheme, so there is one place that knows how to turn `add <path>`,
-`toggle`, etc. into MPD operations.
-
-The concurrency split exists because `tray-icon`/`muda` need the `tao` event
-loop on the **main thread**, while `mpd_client` is async on **tokio**:
-
-1. The main thread runs the event loop and owns the tray icon and menu.
-2. A background tokio task holds the MPD connection and loops on `idle`,
-   getting pushed notifications when player/queue state changes.
-3. On each change it fetches song + status and sends them to the main thread
-   via an `EventLoopProxy`, along with a cheap clone of the `Client` — so the
-   main thread always holds a live handle to issue commands with, and no
-   separate command channel is needed.
-4. Commands (menu click or URL) clone that `Client` and run as tokio tasks, so
-   execution never blocks the event loop. If MPD is disconnected, the action
-   is a logged no-op rather than an error. The one exception is the copy-URI
-   rows: no MPD involved, and a pasteboard write is fast enough to do inline
-   on the main thread.
-
-The title and menu refresh **only when MPD state actually changes** —
-idle-driven, never polled.
+One binary, one long-running process, one crate: the menu bar and the URL
+scheme are handled inside the same process, which owns the MPD connection.
+The main thread runs the tray icon and menu (`tao`/`muda`), while a background
+tokio task holds the MPD connection and pushes state changes across on every
+`idle` notification — see [docs/architecture.md](docs/architecture.md) for
+the module breakdown and a diagram of the threading model.
 
 ## Requirements
 
 - macOS
 - Rust (stable, 2024 edition)
 - MPD running locally (e.g. `brew install mpd`)
-- Optionally, [`mpc`](https://www.musicpd.org/clients/mpc/) on `PATH`
+- [`mpc`](https://www.musicpd.org/clients/mpc/) on `PATH`
   (`brew install mpc`) — used as a fallback for any command not natively
-  implemented (see "URL scheme" below)
+  implemented (see [docs/usage.md](docs/usage.md))
 
 ## Build & install
 
@@ -98,7 +101,7 @@ mpd_port = 6600           # default: 6600
 key_playlists = [         # default: empty — controls the "Add to" submenu, see below
   "Five stars",
   "My Top Rated",
-  "mellow_2024",
+  "Classical Meditation",
 ]
 ```
 
@@ -108,70 +111,12 @@ that doesn't exist in MPD is logged at `warn` and omitted from the menu.
 
 ## Using it
 
-The menu bar shows the current track as `Title - Artist` (truncated — the
-dropdown's track row always shows it in full), `♫` when connected but
-nothing is playing, or `🔇` when MPD is unreachable — the app keeps retrying
-with backoff and recovers automatically, no restart needed. When playback is
-paused, the title is prefixed with `⏸ ` (outside the truncation budget, so the
-track text truncates the same whether playing or paused).
-
-Dropdown menu, top to bottom:
-
-- `⏯ Play/Pause`, `⏭ Next`, `⏹ Clear`
-- Album navigation (only while inside a same-directory run of 5+ tracks and
-  `random` is off — see `docs/implementation-details.md`):
-  - `⏮⏮ Start of Album` on track 2+ of an album, or `⏮⏮ Prev Album: <name>` on
-    track 1
-  - `⏭⏭ Next Album: <name>`, omitted at the last album
-- `⧉ <Title - Artist>` and `⧉ <Album>` — the current track and its album, in
-  full. Clicking either copies an `mpdcontrol://add "<path>"` URI to the
-  clipboard, ready to paste into Obsidian or anywhere else that takes a link:
-  the track's own file for the first, its parent directory (the whole album,
-  since `add` is recursive) for the second. The album row is omitted for a
-  library-root file, which has no album directory.
-- `In playlists ▶` — every playlist containing the current song, disabled
-  labels, informational only; omitted when the song is in none
-- `Add to ▶` — `key_playlists` minus any already containing the song; clicking
-  adds it via `playlistadd`; omitted when `key_playlists` is empty or already
-  covers the song
-- `Quit`
-
-Separators between sections are omitted when the section between them is
-empty.
-
-### URL scheme
-
-`mpdcontrol://<command>` dispatches a decoded, `shlex`-tokenised command
-against MPD — fire-and-forget, no return value. For example:
-
-```
-mpdcontrol://toggle
-mpdcontrol://add%20%22Album%2FPath%22
-```
-
-`add <path>` is recursive, like `mpc add`. Any command not natively
-implemented (`toggle`, `next`, `clear`, `add`) is shelled out to the system
-`mpc` binary verbatim, covering the long tail of MPD commands.
-
-**One command per URI.** There's no shell in the path — unrecognized tokens
-become `mpc`'s `argv` — so `clear && add "..." && play` doesn't chain, it
-hands `mpc` a literal `&&` and silently does nothing useful. (The predecessor
-to this app, an `mpcuri://` Platypus script, did run its payload through a
-shell; links written for it need splitting up.)
-
-The menu's `⧉` rows are the easy way to get a correctly-encoded URI for
-what's playing, rather than assembling one by hand.
-
-> **Known issue:** if the app isn't already running, macOS launches it to
-> handle the link, and a URL arriving in that first instant can be dropped
-> while the MPD connection is still coming up (logged as `ignoring url
-> command: not connected to MPD`). Clicking again works. See
-> `docs/implementation-details.md` for the fix if it starts to annoy.
-
-> **Known trade-off (accepted):** this pass-through means *any* `mpdcontrol://`
-> link — including one embedded in a web page — can invoke any command,
-> including the `mpc` fallback. That's fine for a single-user personal tool;
-> it would need a verb allowlist if it ever became multi-user or web-exposed.
+The menu bar shows the current track, with play/next/clear controls, album
+navigation, playlist membership, and copy-to-clipboard rows for building
+`mpdcontrol://` links. That same URL scheme also works standalone,
+fire-and-forget, from anywhere on the system (e.g. an Obsidian link). See
+[docs/usage.md](docs/usage.md) for the full menu breakdown and the URL
+scheme's syntax, one-command-per-URI limitation, and known issues.
 
 ## Logging
 
@@ -200,9 +145,11 @@ round-tripping, and the copy rows' URI encoding — including a round trip back
 out through URL parse → percent-decode → tokenise, which is the only thing
 holding the two ends of that format together.
 
-There is no GUI or integration test harness. Anything touching `muda` is
-structurally untestable — `muda::Menu` can only be built on the main thread,
-and `cargo test` runs on spawned threads — which is why menu *decisions* live
-in `menu::model` rather than `menu::render`. Those paths, and everything
-needing a live MPD, were verified by hand (see
-[docs/implementation-details.md](docs/implementation-details.md)).
+There is no GUI or integration test harness — see
+[docs/architecture.md](docs/architecture.md) for why, and
+[docs/implementation-details.md](docs/implementation-details.md) for how the
+untested paths were verified by hand instead.
+
+## License
+
+[MIT](LICENSE) — take the code or ideas, no permission needed.
