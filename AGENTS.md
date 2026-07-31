@@ -2,7 +2,7 @@
 
 A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. Complete
 and in daily use: playback controls, album traversal, playlist membership and
-"Add to", plus the URL scheme. See `README.md` for architecture and usage, and
+"Add to", copy-URI rows for the current track and album, plus the URL scheme. See `README.md` for architecture and usage, and
 `docs/implementation-details.md` for the non-obvious details behind it —
 including the measured evidence behind the album-grouping and run-length
 rules, which should not be re-derived or "tuned" without re-measuring.

@@ -24,8 +24,9 @@ MPD connection and any future in-memory state.
 | `src/main.rs`   | startup, `tao` event loop, tray icon + menu, URL handling  |
 | `src/mpd.rs`    | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
 | `src/command.rs`| decoded command string → dispatch against MPD              |
-| `src/menu.rs`   | pure menu model (album nav, playlist membership) + thin render, title formatting/truncation |
+| `src/menu.rs`   | pure menu model (album nav, playlist membership, copy URIs) + thin render, title formatting/truncation |
 | `src/config.rs` | TOML config load + defaults                                |
+| `src/clipboard.rs` | pasteboard write (`arboard`), for the copy-URI menu rows |
 
 `command.rs` is the shared dispatch path used by *both* menu clicks and the
 URL scheme, so there is one place that knows how to turn `add <path>`,
@@ -105,8 +106,8 @@ that doesn't exist in MPD is logged at `warn` and omitted from the menu.
 
 ## Using it
 
-The menu bar shows the current track as `Title - Artist` (truncated with a
-disabled full-text item in the dropdown when long), `♫` when connected but
+The menu bar shows the current track as `Title - Artist` (truncated — the
+dropdown's track row always shows it in full), `♫` when connected but
 nothing is playing, or `🔇` when MPD is unreachable — the app keeps retrying
 with backoff and recovers automatically, no restart needed. When playback is
 paused, the title is prefixed with `⏸ ` (outside the truncation budget, so the
@@ -120,7 +121,12 @@ Dropdown menu, top to bottom:
   - `⏮⏮ Start of Album` on track 2+ of an album, or `⏮⏮ Prev Album: <name>` on
     track 1
   - `⏭⏭ Next Album: <name>`, omitted at the last album
-- The current track, disabled, shown only when its title was truncated
+- `⧉ <Title - Artist>` and `⧉ <Album>` — the current track and its album, in
+  full. Clicking either copies an `mpdcontrol://add "<path>"` URI to the
+  clipboard, ready to paste into Obsidian or anywhere else that takes a link:
+  the track's own file for the first, its parent directory (the whole album,
+  since `add` is recursive) for the second. The album row is omitted for a
+  library-root file, which has no album directory.
 - `In playlists ▶` — every playlist containing the current song, disabled
   labels, informational only; omitted when the song is in none
 - `Add to ▶` — `key_playlists` minus any already containing the song; clicking
@@ -172,8 +178,10 @@ cargo test
 Unit tests only, covering the pure bits that are easy to get wrong: URL decode
 → tokenise → command parse, config loading and defaults, menu display logic
 (title truncation, paused prefix, icon/state selection), album traversal
-(run detection, jump targets, labels), playlist membership, and menu-id
-round-tripping.
+(run detection, jump targets, labels), playlist membership, menu-id
+round-tripping, and the copy rows' URI encoding — including a round trip back
+out through URL parse → percent-decode → tokenise, which is the only thing
+holding the two ends of that format together.
 
 There is no GUI or integration test harness. Anything touching `muda` is
 structurally untestable — `muda::Menu` can only be built on the main thread,

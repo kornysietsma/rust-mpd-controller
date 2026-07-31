@@ -1,7 +1,9 @@
 use anyhow::Result;
 use mpd_client::responses::PlayState;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+use crate::URL_SCHEME;
 use crate::mpd::PlayerSnapshot;
 
 pub const PLAY_PAUSE_ID: &str = "play_pause";
@@ -136,13 +138,6 @@ const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
 const TITLE_MAX_CHARS: usize = 25;
 const ELLIPSIS: char = '…';
 
-/// What the tray should show: the (possibly truncated) title text, and, if
-/// truncation occurred, the untruncated text for a disabled dropdown item.
-pub struct Display {
-    pub title: String,
-    pub full_text: Option<String>,
-}
-
 /// Formats a song as "Title - Artist". Falls back to the song's
 /// URL when there's no title tag, and omits the artist half when there are no
 /// artist tags. Takes already-extracted primitives (rather than mpd_client's
@@ -168,57 +163,42 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-/// Computes the tray display for a song that's playing/paused:
-/// the truncated track text, plus the untruncated text when truncation
-/// occurred so a disabled dropdown item can show it in full. When `state` is
-/// `Paused`, the paused glyph is prefixed onto `title` *after* truncation, so
-/// it sits outside the 25-char budget and never affects where the text is
-/// cut. `full_text` (the untruncated dropdown text) never gets
-/// the prefix — it's not the tray title.
-pub fn track_display(
-    state: PlayState,
-    title: Option<&str>,
-    url: &str,
-    artists: &[String],
-) -> Display {
-    let full = format_track(title, url, artists);
-    let truncated = truncate(&full, TITLE_MAX_CHARS);
-    let full_text = if truncated != full { Some(full) } else { None };
-    let title = if state == PlayState::Paused {
+/// The tray title for a song that's playing/paused: the truncated track text.
+/// The untruncated text isn't returned — the dropdown's copy row (see
+/// `MenuModel::track`) always shows it in full, so there's nothing for a
+/// caller to decide. When `state` is `Paused`, the paused glyph is prefixed
+/// *after* truncation, so it sits outside the 25-char budget and never affects
+/// where the text is cut.
+pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[String]) -> String {
+    let truncated = truncate(&format_track(title, url, artists), TITLE_MAX_CHARS);
+    if state == PlayState::Paused {
         format!("{PAUSED_ICON} {truncated}")
     } else {
         truncated
-    };
-    Display { title, full_text }
-}
-
-/// The tray display when connected but nothing is playing.
-pub fn empty_queue_display() -> Display {
-    Display {
-        title: EMPTY_QUEUE_ICON.to_string(),
-        full_text: None,
     }
 }
 
-/// The tray display while MPD is unreachable.
-pub fn disconnected_display() -> Display {
-    Display {
-        title: DISCONNECTED_ICON.to_string(),
-        full_text: None,
-    }
+/// The tray title when connected but nothing is playing.
+pub fn empty_queue_title() -> String {
+    EMPTY_QUEUE_ICON.to_string()
 }
 
-/// Computes the tray display for a connected snapshot: track text when a
+/// The tray title while MPD is unreachable.
+pub fn disconnected_title() -> String {
+    DISCONNECTED_ICON.to_string()
+}
+
+/// Computes the tray title for a connected snapshot: track text when a
 /// song is playing/paused, the "nothing playing" icon otherwise.
-pub fn display_for_snapshot(snapshot: &PlayerSnapshot) -> Display {
+pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
     match &snapshot.song {
-        Some(song) => track_display(
+        Some(song) => track_title(
             snapshot.status.state,
             song.title(),
             &song.url,
             song.artists(),
         ),
-        None => empty_queue_display(),
+        None => empty_queue_title(),
     }
 }
 
@@ -241,6 +221,70 @@ fn add_to_list(playlists_for_url: &[String], key_playlists: &[String]) -> Vec<St
         .filter(|name| !playlists_for_url.contains(name))
         .cloned()
         .collect()
+}
+
+/// Everything outside RFC 3986's *unreserved* set gets percent-encoded. This
+/// is deliberately more aggressive than the URL parser needs: it matches
+/// Python's `quote(s, safe="")`, which is what the existing `mpcuri://` links
+/// in Obsidian were generated with, so links from both sources look identical.
+/// It also has to survive a round trip through `Url::parse` on the way back
+/// in — the payload lands in the URL's *opaque host* component (see
+/// `main::decode_command_from_url`), where `/`, `:`, `?`, `#` and space are
+/// all forbidden raw.
+const URI_PAYLOAD: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Wraps a library path as a single `shlex` token. The receiving end
+/// re-tokenizes with `shlex::split` (`command::tokenize`), which honours
+/// backslash escapes inside double quotes — so a path containing `"` or `\`
+/// survives instead of producing an unbalanced-quote error.
+fn quote_path(path: &str) -> String {
+    let escaped = path.replace('\\', r"\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// The `mpdcontrol://` URI that queues `path` — a track file for the track
+/// row, its parent directory for the album row (`add` is recursive, so a
+/// directory adds the whole album). Copied to the clipboard for pasting into
+/// Obsidian and friends; nothing in this app consumes it directly.
+pub fn add_uri(path: &str) -> String {
+    let command = format!("add {}", quote_path(path));
+    format!(
+        "{URL_SCHEME}://{}",
+        utf8_percent_encode(&command, URI_PAYLOAD)
+    )
+}
+
+/// A menu row that copies `uri` to the clipboard when clicked. Both the
+/// current track and its album get one; the `uri` doubles as the menu item's
+/// id, so dispatch needs no other state to act on the click.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CopyRow {
+    pub label: String,
+    pub uri: String,
+}
+
+/// The current track's copy row, labelled with its full untruncated
+/// "Title - Artist" text — this row is also what shows the part the tray
+/// title had to cut.
+fn track_copy_row(current: &CurrentTrack<'_>) -> CopyRow {
+    CopyRow {
+        label: format_track(current.title, current.url, current.artists),
+        uri: add_uri(current.url),
+    }
+}
+
+/// The current album's copy row. `None` for a library-root file, which has no
+/// parent directory and therefore no album to add.
+fn album_copy_row(queue: &[QueueEntry], current: &CurrentTrack<'_>) -> Option<CopyRow> {
+    let directory = album_key(current.url)?;
+    Some(CopyRow {
+        label: album_display_name(queue.get(current.pos)?),
+        uri: add_uri(directory),
+    })
 }
 
 /// Both album-nav targets, or `(None, None)` when the rows should be hidden:
@@ -271,7 +315,8 @@ fn album_nav(
 /// it's unit-testable without a live MPD connection. Carries no
 /// tray title — that's set independently via `Display`.
 pub struct MenuModel {
-    pub full_text: Option<String>,
+    pub track: Option<CopyRow>,
+    pub album: Option<CopyRow>,
     pub prev_album: Option<AlbumJump>,
     pub next_album: Option<AlbumJump>,
     pub in_playlists: Vec<String>,
@@ -284,7 +329,8 @@ impl MenuModel {
     /// connection drops, leaving just the always-present action rows and Quit.
     pub fn empty() -> Self {
         MenuModel {
-            full_text: None,
+            track: None,
+            album: None,
             prev_album: None,
             next_album: None,
             in_playlists: Vec::new(),
@@ -302,11 +348,14 @@ impl MenuModel {
         self.prev_album.is_some() || self.next_album.is_some()
     }
 
-    /// Whether the current-track section (full text, "In playlists", "Add
-    /// to") and its preceding separator should be emitted. Same rule and same
-    /// reasoning as `show_album_section`.
+    /// Whether the current-track section (the track and album copy rows, "In
+    /// playlists", "Add to") and its preceding separator should be emitted.
+    /// Same rule and same reasoning as `show_album_section`.
     pub fn show_track_section(&self) -> bool {
-        self.full_text.is_some() || !self.in_playlists.is_empty() || !self.add_to.is_empty()
+        self.track.is_some()
+            || self.album.is_some()
+            || !self.in_playlists.is_empty()
+            || !self.add_to.is_empty()
     }
 }
 
@@ -332,9 +381,10 @@ pub fn model(
     playlists_for_url: &[String],
     key_playlists: &[String],
 ) -> MenuModel {
-    let full_text = current
+    let track = current.as_ref().map(track_copy_row);
+    let album = current
         .as_ref()
-        .and_then(|track| track_display(state, track.title, track.url, track.artists).full_text);
+        .and_then(|current| album_copy_row(queue, current));
     let (prev_album, next_album) = album_nav(
         state,
         random,
@@ -343,7 +393,8 @@ pub fn model(
     );
 
     MenuModel {
-        full_text,
+        track,
+        album,
         prev_album,
         next_album,
         in_playlists: in_playlists_list(playlists_for_url),
@@ -359,13 +410,19 @@ const NEXT_ICON: &str = "\u{23ED}\u{FE0E}";
 const CLEAR_ICON: &str = "\u{23F9}\u{FE0E}";
 const PREV_ALBUM_ICON: &str = "\u{23EE}\u{FE0E}\u{23EE}\u{FE0E}";
 const NEXT_ALBUM_ICON: &str = "\u{23ED}\u{FE0E}\u{23ED}\u{FE0E}";
+// U+29C9 "two joined squares" — the copy/duplicate glyph macOS uses in text
+// contexts. Deliberately not 📋 (U+1F4CB): that codepoint has no text
+// presentation form in the system fonts, so `U+FE0E` can't tame it and it
+// renders as wide colour emoji against the menu's monochrome glyphs.
+const COPY_ICON: &str = "\u{29C9}";
 
-// The two dynamic menu-id families. Both the builders and the
+// The three dynamic menu-id families. Both the builders and the
 // `strip_*` parsers live here so `main.rs` dispatch never has to know the wire
 // format — otherwise the halves sit in different modules with nothing keeping
 // them in step.
 const ALBUM_ID_PREFIX: &str = "album:";
 const ADDTO_ID_PREFIX: &str = "addto:";
+const COPY_ID_PREFIX: &str = "copy:";
 
 fn album_jump_item_id(song_id: u64) -> String {
     format!("{ALBUM_ID_PREFIX}{song_id}")
@@ -373,6 +430,14 @@ fn album_jump_item_id(song_id: u64) -> String {
 
 fn addto_item_id(name: &str) -> String {
     format!("{ADDTO_ID_PREFIX}{name}")
+}
+
+/// The copy rows carry their whole payload in the id, so a click needs no
+/// lookup against state that may have moved on since the menu was built —
+/// unlike "Add to", which acts on the song the menu was built from and so has
+/// to reach for `main.rs`'s remembered URL.
+fn copy_item_id(uri: &str) -> String {
+    format!("{COPY_ID_PREFIX}{uri}")
 }
 
 /// The song-id text of an album-nav menu id, or `None` if `id` isn't one.
@@ -387,6 +452,11 @@ pub fn strip_album_id(id: &str) -> Option<&str> {
 /// name — this never splits on an interior colon.
 pub fn strip_addto_id(id: &str) -> Option<&str> {
     id.strip_prefix(ADDTO_ID_PREFIX)
+}
+
+/// The `mpdcontrol://` URI to copy, or `None` if `id` isn't a copy row's.
+pub fn strip_copy_id(id: &str) -> Option<&str> {
+    id.strip_prefix(COPY_ID_PREFIX)
 }
 
 /// Turns an already-computed `MenuModel` into `muda` items. Every decision
@@ -438,8 +508,16 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
 
     if model.show_track_section() {
         menu.append(&PredefinedMenuItem::separator())?;
-        if let Some(text) = &model.full_text {
-            menu.append(&MenuItem::new(text, false, None))?;
+        for row in [model.track.as_ref(), model.album.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            menu.append(&MenuItem::with_id(
+                copy_item_id(&row.uri),
+                format!("{COPY_ICON} {}", row.label),
+                true,
+                None,
+            ))?;
         }
         if !model.in_playlists.is_empty() {
             let submenu = Submenu::new("In playlists", true);
@@ -531,60 +609,53 @@ mod tests {
     }
 
     #[test]
-    fn track_display_shows_full_text_untruncated_when_short() {
+    fn track_title_is_untouched_when_short() {
         let artists = vec!["My Artist".to_string()];
-        let display = track_display(PlayState::Playing, Some("My Title"), "foo.mp3", &artists);
-        assert_eq!(display.title, "My Title - My Artist");
-        assert!(display.full_text.is_none());
+        let title = track_title(PlayState::Playing, Some("My Title"), "foo.mp3", &artists);
+        assert_eq!(title, "My Title - My Artist");
     }
 
     #[test]
-    fn track_display_truncates_and_exposes_full_text() {
+    fn track_title_truncates_long_text() {
         let long_title = "a".repeat(40);
-        let display = track_display(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
-        assert_eq!(display.title.chars().count(), TITLE_MAX_CHARS);
-        assert_eq!(display.full_text.as_deref(), Some(long_title.as_str()));
+        let title = track_title(PlayState::Playing, Some(&long_title), "foo.mp3", &[]);
+        assert_eq!(title.chars().count(), TITLE_MAX_CHARS);
     }
 
     #[test]
-    fn track_display_prefixes_paused_glyph_when_paused() {
-        let display = track_display(PlayState::Paused, Some("My Title"), "foo.mp3", &[]);
-        assert_eq!(display.title, format!("{PAUSED_ICON} My Title"));
+    fn track_title_prefixes_paused_glyph_when_paused() {
+        let title = track_title(PlayState::Paused, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(title, format!("{PAUSED_ICON} My Title"));
     }
 
     #[test]
-    fn track_display_omits_paused_glyph_when_playing_or_stopped() {
-        let playing = track_display(PlayState::Playing, Some("My Title"), "foo.mp3", &[]);
-        assert_eq!(playing.title, "My Title");
-        let stopped = track_display(PlayState::Stopped, Some("My Title"), "foo.mp3", &[]);
-        assert_eq!(stopped.title, "My Title");
+    fn track_title_omits_paused_glyph_when_playing_or_stopped() {
+        let playing = track_title(PlayState::Playing, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(playing, "My Title");
+        let stopped = track_title(PlayState::Stopped, Some("My Title"), "foo.mp3", &[]);
+        assert_eq!(stopped, "My Title");
     }
 
     #[test]
-    fn track_display_paused_prefix_sits_outside_the_truncation_budget() {
+    fn track_title_paused_prefix_sits_outside_the_truncation_budget() {
         // Spec §7.1: the glyph is prepended *after* truncation, so text is cut
         // at exactly the same point whether paused or playing. Checked at the
         // budget boundary and well past it.
         for title in [&"a".repeat(TITLE_MAX_CHARS), &"a".repeat(40)] {
-            let playing = track_display(PlayState::Playing, Some(title), "foo.mp3", &[]);
-            let paused = track_display(PlayState::Paused, Some(title), "foo.mp3", &[]);
-            assert_eq!(paused.title, format!("{PAUSED_ICON} {}", playing.title));
-            assert_eq!(playing.full_text, paused.full_text);
+            let playing = track_title(PlayState::Playing, Some(title), "foo.mp3", &[]);
+            let paused = track_title(PlayState::Paused, Some(title), "foo.mp3", &[]);
+            assert_eq!(paused, format!("{PAUSED_ICON} {playing}"));
         }
     }
 
     #[test]
-    fn empty_queue_display_shows_icon() {
-        let display = empty_queue_display();
-        assert_eq!(display.title, EMPTY_QUEUE_ICON);
-        assert!(display.full_text.is_none());
+    fn empty_queue_title_is_icon() {
+        assert_eq!(empty_queue_title(), EMPTY_QUEUE_ICON);
     }
 
     #[test]
-    fn disconnected_display_shows_icon() {
-        let display = disconnected_display();
-        assert_eq!(display.title, DISCONNECTED_ICON);
-        assert!(display.full_text.is_none());
+    fn disconnected_title_is_icon() {
+        assert_eq!(disconnected_title(), DISCONNECTED_ICON);
     }
 
     fn entry(url: &str) -> QueueEntry {
@@ -916,10 +987,18 @@ mod tests {
             &key_playlists,
         );
 
+        let track = model.track.unwrap();
         assert_eq!(
-            model.full_text.as_deref(),
-            Some("Come Together - The Beatles (Remastered 2019 Edition)")
+            track.label,
+            "Come Together - The Beatles (Remastered 2019 Edition)"
         );
+        assert_eq!(
+            track.uri,
+            "mpdcontrol://add%20%22Beatles%2FAbbey%20Road%2F3.mp3%22"
+        );
+        let album = model.album.unwrap();
+        assert_eq!(album.label, "Abbey Road");
+        assert_eq!(album.uri, "mpdcontrol://add%20%22Beatles%2FAbbey%20Road%22");
         let prev = model.prev_album.unwrap();
         assert_eq!(prev.label, "Start of Album");
         assert_eq!(prev.song_id, 1);
@@ -931,13 +1010,17 @@ mod tests {
     }
 
     fn model_with(
-        full_text: Option<&str>,
+        track: Option<&str>,
         prev_album: Option<AlbumJump>,
         in_playlists: Vec<String>,
         add_to: Vec<String>,
     ) -> MenuModel {
         MenuModel {
-            full_text: full_text.map(str::to_string),
+            track: track.map(|label| CopyRow {
+                label: label.to_string(),
+                uri: add_uri("Al/1.mp3"),
+            }),
+            album: None,
             prev_album,
             next_album: None,
             in_playlists,
@@ -973,14 +1056,109 @@ mod tests {
     }
 
     #[test]
-    fn track_section_shows_when_any_of_its_three_parts_is_present() {
-        assert!(model_with(Some("long track text"), None, vec![], vec![]).show_track_section());
+    fn track_section_shows_when_any_of_its_parts_is_present() {
+        assert!(model_with(Some("Some Track"), None, vec![], vec![]).show_track_section());
         assert!(
             model_with(None, None, vec!["Five stars".to_string()], vec![]).show_track_section()
         );
         assert!(
             model_with(None, None, vec![], vec!["My Top Rated".to_string()]).show_track_section()
         );
+
+        let album_only = MenuModel {
+            album: Some(CopyRow {
+                label: "Abbey Road".to_string(),
+                uri: add_uri("Beatles/Abbey Road"),
+            }),
+            ..model_with(None, None, vec![], vec![])
+        };
+        assert!(album_only.show_track_section());
+    }
+
+    #[test]
+    fn add_uri_matches_the_hand_written_album_and_track_examples() {
+        // The two URIs that were pasted into Obsidian by hand before this
+        // existed — byte-for-byte, so links from both sources stay identical.
+        assert_eq!(
+            add_uri("Albums/B/Billy Bragg/Tooth & Nail"),
+            "mpdcontrol://add%20%22Albums%2FB%2FBilly%20Bragg%2FTooth%20%26%20Nail%22"
+        );
+        assert_eq!(
+            add_uri("Albums/T/They Might Be Giants/They Might Be Giants/03 Number Three.mp3"),
+            "mpdcontrol://add%20%22Albums%2FT%2FThey%20Might%20Be%20Giants%2FThey%20Might%20Be%20Giants%2F03%20Number%20Three.mp3%22"
+        );
+    }
+
+    #[test]
+    fn add_uri_leaves_the_unreserved_set_alone() {
+        // Python's `quote(s, safe="")` encodes everything but these four
+        // punctuation marks; `%` itself must be encoded, or decoding the URI
+        // would eat the following two characters.
+        assert_eq!(
+            add_uri("a-b_c.d~e%f"),
+            "mpdcontrol://add%20%22a-b_c.d~e%25f%22"
+        );
+    }
+
+    #[test]
+    fn add_uri_survives_a_round_trip_through_the_url_scheme() {
+        // The half this module owns has to come back out of the half
+        // `main::decode_command_from_url` + `command::parse` own — the two
+        // sides are only connected by this format.
+        let path = r#"Albums/Q/Queen/Weird "Quoted" & \Slashed\ Album/01 Track.mp3"#;
+        let uri = url::Url::parse(&add_uri(path)).unwrap();
+        let decoded = percent_encoding::percent_decode_str(uri.host_str().unwrap())
+            .decode_utf8()
+            .unwrap();
+        assert_eq!(shlex::split(&decoded).unwrap(), vec!["add", path]);
+    }
+
+    #[test]
+    fn album_copy_row_is_absent_for_a_library_root_file() {
+        // No parent directory means no album to add — same rule as `album_key`.
+        let queue = vec![queue_entry("loose_track.mp3", None, 1)];
+        let model = model(
+            PlayState::Playing,
+            false,
+            &queue,
+            Some(CurrentTrack {
+                pos: 0,
+                url: &queue[0].url,
+                title: Some("Loose Track"),
+                artists: &[],
+            }),
+            &[],
+            &[],
+        );
+        assert!(model.album.is_none());
+        assert!(model.track.is_some());
+    }
+
+    #[test]
+    fn album_copy_row_labels_from_the_tag_but_links_the_directory() {
+        // The label follows album-nav's naming (tag first), while the URI must
+        // use the on-disk path — `add` takes a library path, not a tag.
+        let queue = vec![queue_entry("A/ar 1972/1.mp3", Some("Abbey Road"), 1)];
+        let row = album_copy_row(
+            &queue,
+            &CurrentTrack {
+                pos: 0,
+                url: &queue[0].url,
+                title: None,
+                artists: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(row.label, "Abbey Road");
+        assert_eq!(row.uri, add_uri("A/ar 1972"));
+    }
+
+    #[test]
+    fn copy_id_round_trips_a_uri() {
+        // URIs contain ':' (the scheme's own) — the parser must return the
+        // whole remainder, not stop at the first colon.
+        let uri = add_uri("Albums/A/Album/01 Track.mp3");
+        assert_eq!(strip_copy_id(&copy_item_id(&uri)), Some(uri.as_str()));
     }
 
     #[test]
@@ -1005,5 +1183,12 @@ mod tests {
         assert_eq!(strip_addto_id(&album_jump_item_id(42)), None);
         assert_eq!(strip_album_id(QUIT_ID), None);
         assert_eq!(strip_addto_id(QUIT_ID), None);
+
+        let copy_id = copy_item_id(&add_uri("Al/1.mp3"));
+        assert_eq!(strip_album_id(&copy_id), None);
+        assert_eq!(strip_addto_id(&copy_id), None);
+        assert_eq!(strip_copy_id(&addto_item_id("Five stars")), None);
+        assert_eq!(strip_copy_id(&album_jump_item_id(42)), None);
+        assert_eq!(strip_copy_id(QUIT_ID), None);
     }
 }

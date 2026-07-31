@@ -22,6 +22,16 @@ Chosen after a fresh review of the Rust ecosystem in July 2026.
   use. It also turned out to solve the URL scheme for free (see below).
 - **`mpd_client`** — async/tokio, typed responses, and first-class `idle`
   support, which is what makes the push-based (not polled) design possible.
+- **`arboard`** for the clipboard, rather than shelling out to `pbcopy` like
+  the `mpc` fallback does. A pipe to `pbcopy` was the first cut, and it's
+  worth recording why it lost: spawn, stdin write, and exit status are three
+  failure paths instead of one, `child.wait()` has no timeout (a hung
+  `pbcopy` would leak the task), and the whole thing needed a tokio task to
+  stay off the event loop. `arboard` is two synchronous lines on the main
+  thread. The usual objection — a dependency tree for one pipe — doesn't
+  apply here: with `default-features = false` its macOS deps are the objc2
+  crates `tao`/`tray-icon` already resolve at identical versions, so it costs
+  exactly one new crate.
 
 ## The URL scheme was the fiddly part
 
@@ -52,6 +62,28 @@ contains no unsafe code (`#![forbid(unsafe_code)]` in `main.rs`).
 So `decode_command_from_url` in `src/main.rs` reads the *host* and
 percent-decodes it. This was confirmed experimentally against that exact
 example before anything was built on it, and there's a unit test pinning it.
+
+### The copy rows write the same format the other end reads
+
+`menu::add_uri` is the only producer of `mpdcontrol://` URIs in the app, and
+it has to satisfy two constraints at once:
+
+- **Survive `Url::parse` on the way back in.** The payload lands in the
+  opaque host (above), where space, `/`, `:`, `?` and `#` are all forbidden
+  raw — so the encode set can't be conservative.
+- **Match the links already in Obsidian**, which were generated with Python's
+  `quote(s, safe="")`. That leaves exactly RFC 3986's unreserved set
+  (`A-Za-z0-9-._~`) alone, which is what `URI_PAYLOAD` spells out, so a
+  hand-written `mpcuri://` link and a copied `mpdcontrol://` one are
+  byte-identical apart from the scheme.
+
+The path is wrapped in double quotes and its `"`/`\` backslash-escaped, since
+the receiving end re-tokenizes with `shlex::split` — an album like
+`Weird "Quoted" Album` would otherwise come back as an unbalanced-quote error.
+A unit test walks a path containing both characters all the way back out
+through URL parse → percent-decode → tokenise; that round trip is the only
+thing tying the two ends together, as nothing in this app consumes its own
+URIs at runtime.
 
 ### Registration only works from `/Applications`
 
@@ -214,6 +246,12 @@ default to colour-emoji presentation, so they'd depend on `U+FE0E` actually
 being honoured to look consistent, whereas doubling a glyph that already
 renders correctly does not.
 
+The copy rows are the one exception to the `U+FE0E` rule: they use `⧉`
+(U+29C9), which has no emoji presentation to suppress. 📋 (U+1F4CB) is the
+obvious literal clipboard, but it has no text presentation form in the system
+fonts, so `U+FE0E` can't tame it — it would render as a wide colour blob
+against everything else.
+
 The doubled `⏮⏮` is used for *both* states of the prev item ("Start of Album"
 and "Prev Album: …") on purpose — the icon stays put while only the label
 changes, so the row doesn't appear to flicker between two different items as
@@ -260,6 +298,31 @@ MPD state to reproduce:
 Both are the same shape: an assumption about MPD's real-world behaviour that
 looked obviously true and wasn't. Budget for a live pass on anything new that
 touches MPD state.
+
+v3 (the current track/album copy rows) was walked through live against the
+real library, with both the original `pbcopy` implementation and the `arboard`
+one that replaced it: clicking each row put the URI on the clipboard, and it
+pasted correctly. Better than that, the copied URIs were then opened for real
+and came back through Launch Services intact —
+
+```
+dispatching mpdcontrol URL command: "add \"Albums/S/Skyhooks/Living in the 70's\""
+dispatching mpdcontrol URL command: "add \"Albums/K/Kraftwerk/Autobahn\""
+```
+
+— which exercises the whole loop (generate → percent-encode → clipboard →
+macOS → parse → percent-decode → `shlex`) on a real path containing an
+apostrophe, not just the unit test's synthetic one.
+
+That pass also surfaced one thing that is **not fixed**: if the app isn't
+already running when an `mpdcontrol://` link is clicked, Launch Services
+starts it and the URL can reach the event loop before the first
+`MpdEvent::Connected` does, so `spawn_command` finds no client and logs
+`ignoring url command: not connected to MPD`. The command is silently
+dropped and the click has to be repeated. It predates the copy rows, but they
+make it far easier to hit, since pasting links into notes is exactly the
+"app might not be running" case. The fix would be to hold URLs that arrive
+while `current_client` is `None` and drain them on the next `Connected`.
 
 `tray-icon`'s known cosmetic quirks (icon rendering, an occasional double icon
 on some macOS versions) were not encountered on the macOS version in use.

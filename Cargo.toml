@@ -26,6 +26,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 simplelog = "0.12.2"
 url = "2.5.8"
 percent-encoding = "2.3.2"
+# Clipboard, for the menu's copy-URI rows. `default-features = false` drops the
+# `image` feature (we only ever set text); what's left on macOS is the objc2
+# stack, every crate of which `tao`/`tray-icon` already pull in at the same
+# version — so this adds exactly one crate to the build.
+arboard = { version = "3.6.1", default-features = false }
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 

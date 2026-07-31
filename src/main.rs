@@ -4,6 +4,7 @@
 #![warn(rust_2024_compatibility)]
 #![warn(deprecated_safe)]
 
+mod clipboard;
 mod command;
 mod config;
 mod menu;
@@ -30,7 +31,9 @@ use url::Url;
 
 use crate::mpd::MpdEvent;
 
-/// The scheme registered for this app: `mpdcontrol://...`.
+/// The scheme registered for this app: `mpdcontrol://...`. Both ends live off
+/// this: `decode_command_from_url` below reads it, and `menu::add_uri` writes
+/// it into the URIs the copy rows put on the clipboard.
 const URL_SCHEME: &str = "mpdcontrol";
 
 /// Extracts and percent-decodes the command payload from an `mpdcontrol://`
@@ -214,6 +217,15 @@ fn main() -> Result<()> {
                         }
                         None => warn!("ignoring \"addto:{name}\": no current song"),
                     }
+                } else if let Some(uri) = menu::strip_copy_id(&menu_event.id.0) {
+                    // Not routed through `spawn_command`: copying needs no MPD
+                    // client (so it still works if the connection dropped while
+                    // the menu was open), and a pasteboard write is fast enough
+                    // to do inline rather than on the tokio runtime.
+                    match clipboard::copy(uri) {
+                        Ok(()) => info!("copied {uri} to clipboard"),
+                        Err(e) => warn!("failed to copy {uri} to clipboard: {e:#}"),
+                    }
                 }
             }
             Event::Opened { urls } => {
@@ -236,13 +248,13 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
-                let (display, built_menu) = match mpd_event {
+                let (title, built_menu) = match mpd_event {
                     MpdEvent::Connected(snapshot, playlists, client) => {
                         debug!("MPD state: {:?}", snapshot.status.state);
                         play_state = snapshot.status.state;
                         current_client = Some(client);
                         current_url = snapshot.song.as_ref().map(|song| song.url.clone());
-                        let display = menu::display_for_snapshot(&snapshot);
+                        let title = menu::title_for_snapshot(&snapshot);
 
                         let entries = queue_entries(&snapshot.queue);
                         // Only a position that actually resolves to a queue
@@ -284,18 +296,18 @@ fn main() -> Result<()> {
                             &playlists_for_url,
                             &known_key_playlists,
                         );
-                        (display, menu::render(&model))
+                        (title, menu::render(&model))
                     }
                     MpdEvent::Disconnected => {
                         current_client = None;
                         current_url = None;
                         (
-                            menu::disconnected_display(),
+                            menu::disconnected_title(),
                             menu::render(&menu::MenuModel::empty()),
                         )
                     }
                 };
-                tray_icon.set_title(Some(&display.title));
+                tray_icon.set_title(Some(&title));
                 match built_menu {
                     Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
                     Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
