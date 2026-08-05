@@ -73,6 +73,25 @@ Known gotchas already found this way, so you don't have to re-derive them:
   toggling `random` mid-album-run had no effect on the menu until `Options`
   was handled identically to `Player` (both just refetch `Status` +
   `CurrentSong` and reuse the cached queue).
+- `mpd_client` 1.4.1's `Tag` enum has a typed `OriginalDate` variant but **no**
+  variant for `MUSICBRAINZ_RELEASEGROUPID` (or any other unrecognized tag) —
+  those fall into the catch-all `Tag::Other(Box<str>)`, and `SongBuilder`
+  applies this to every field key, so nothing sent by MPD is ever dropped.
+  Confirmed live via `CurrentSong`: `OriginalDate` and
+  `Other("MUSICBRAINZ_RELEASEGROUPID")` both came through correctly on the
+  same song. No need to special-case tags the enum doesn't know about.
+- `musicbrainz_rs` 0.13.0 needs the `async` feature enabled (off by default)
+  for `execute_async`/`execute_with_client_async` to exist at all. There's no
+  free `set_user_agent()` function — construct
+  `MusicBrainzClient::new(user_agent)` and pass it explicitly to
+  `execute_with_client_async`. `ReleaseGroup::fetch().with_genres()` populates
+  `genres: Option<Vec<Genre>>` with vote counts on `Genre.count`, and
+  `.with_releases()` populates `releases: Option<Vec<Release>>` — both
+  confirmed live, matching spec §2.2's numbers exactly. The client also ships
+  its own leaky-bucket rate limiter (5-request burst, 1/s replenishment) via
+  `api_bindium` — relevant to the "max 1 request/s" rule in spec §7.1, still
+  to be decided when building `sync`: rely on it, or wrap it with the injected
+  `Clock` for deterministic tests.
 
 ## Load-bearing oddities — don't "clean these up"
 

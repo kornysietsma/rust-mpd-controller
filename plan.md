@@ -20,6 +20,7 @@ tree building and green, and ends at a natural commit point.
 | Ratings import | **Throwaway Python script, no tests** | Runs exactly once against real data. Building it in Rust with dry-run, `--force` and sanity-check machinery would be ceremony for a job that happens once. |
 | Clock | **Injected**, never called inline | Standards forbid embedding `now()`. Needed for `first_seen`/`last_seen`/`rated_at`/`mb_synced_at` and to test rate limiting without sleeping. |
 | Commits | Author makes their own | Each step ends with a verification pass, then hand over. |
+| MusicBrainz crate | `musicbrainz_rs` 0.13.0 with `async` feature, confirmed by spike | Fetches release-group genres with vote counts and release lists live. No `reqwest` fallback needed. Usage gotchas in `AGENTS.md`; dependency note in spec §3.3. |
 
 ### 1.2 The testability boundary
 
@@ -96,34 +97,19 @@ either, and this plan doesn't add any.
 
 ## 2. Steps
 
-### Step 1 — Spike: confirm two crate APIs
+### Step 1 — Spike: confirm two crate APIs — DONE
 
-**Throwaway work.** Both unknowns block design decisions later, so resolve them
-before building anything on top.
+- [x] `musicbrainz_rs` 0.13.0 fetches a release group with genre vote counts
+      via `.with_genres()`, and release lists via `.with_releases()`.
+      Verified live, matching spec §2.2's numbers exactly.
+- [x] `mpd_client` 1.4.1 surfaces both typed tags (`OriginalDate`) and
+      untyped ones (`MUSICBRAINZ_RELEASEGROUPID`, via `Tag::Other`).
+      Verified live against the running server.
 
-Per `AGENTS.md`, read the vendored source rather than guessing:
-`find ~/.cargo/registry/src -maxdepth 2 -iname "<crate>-*"`
-
-- [ ] Does `musicbrainz_rs` 0.13.0 fetch a **release group** with
-      `inc=genres` and expose genre **vote counts**?
-- [ ] Can `mpd_client` 1.4.1 read arbitrary tags — specifically
-      `MUSICBRAINZ_RELEASEGROUPID` and `OriginalDate` — or does it only
-      surface a fixed typed set?
-
-**Fallbacks, both already established patterns:**
-- MusicBrainz → direct `reqwest` against
-  `/ws/2/release-group/<mbid>?inc=genres&fmt=json`, which spec §2.2 already
-  validated end to end.
-- MPD → hand-rolled `RawCommand`, exactly as `mpd.rs` already does for
-  `listplaylist` and `command::AddRecursive`.
-
-**Verify:** fetch release group `e159ede0-…` (Alice Cooper, *Welcome to My
-Nightmare*) and confirm you get `hard rock(9)`, `dark cabaret(5)`, `rock(5)` —
-the values measured in spec §2.2. Anything else means the wrong endpoint or
-`inc=` parameter.
-
-**Done when:** both answers are recorded in this file under §1.1, and the
-spike code is deleted.
+No `reqwest`/hand-rolled fallback needed for either. Full usage notes (feature
+flags, client construction, rate limiter) are in `AGENTS.md`; the dependency
+decision is recorded in spec §3.3. The spike used a scratch crate outside this
+repo, so there was no in-repo throwaway code to delete.
 
 ---
 

@@ -195,13 +195,16 @@ Current stable as of 2026-08-04:
 
 - `rusqlite` 0.40.1 (with `bundled` feature)
 - `clap` 4.6.5 (with `derive`)
-- `musicbrainz_rs` 0.13.0
+- `musicbrainz_rs` 0.13.0, **with the `async` feature enabled** (off by
+  default)
 
-**Note for the implementer:** the MusicBrainz work was validated against the
-raw HTTP endpoint (`/ws/2/release-group/<mbid>?inc=genres&fmt=json`), not
-through `musicbrainz_rs`. Confirm the crate exposes release-group genre
-fetching with vote counts before committing to it; if it doesn't, a direct
-`reqwest` call against that endpoint is a small and fully-specified fallback.
+**Confirmed by spike (2026-08-05):** `musicbrainz_rs` fetches release-group
+genres with vote counts — `ReleaseGroup::fetch().with_genres()` populates
+`genres: Option<Vec<Genre>>`, and `Genre.count` is the vote count. Live-fetched
+against the real API and got exactly the numbers in §2.2. `.with_releases()`
+also works, covering §7.3's `mb_original_count`. No `reqwest` fallback is
+needed. Usage gotchas (feature flag, client construction, built-in rate
+limiter) are recorded in `AGENTS.md`.
 
 ---
 
@@ -492,8 +495,13 @@ run.
 MusicBrainz policy compliance is non-negotiable:
 
 - **Maximum 1 request/second**, enforced by the client, not by hope.
+  `musicbrainz_rs` ships its own leaky-bucket limiter (5-burst, 1/s refill);
+  whether that alone satisfies this or needs wrapping with the injected
+  `Clock` for deterministic tests is a `sync`-implementation decision, not a
+  design one (see `AGENTS.md`).
 - **A descriptive User-Agent identifying the application and a contact
-  address.** Anonymous or generic agents get blocked.
+  address.** Anonymous or generic agents get blocked. Set via
+  `MusicBrainzClient::new(user_agent)`, not a global function.
 - No authentication is needed.
 
 Endpoint: `/ws/2/release-group/<mbid>?inc=genres&fmt=json`
