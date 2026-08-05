@@ -80,6 +80,10 @@ Known gotchas already found this way, so you don't have to re-derive them:
   Confirmed live via `CurrentSong`: `OriginalDate` and
   `Other("MUSICBRAINZ_RELEASEGROUPID")` both came through correctly on the
   same song. No need to special-case tags the enum doesn't know about.
+- `rusqlite` 0.40.1's `bundled` feature compiles `libsqlite3-sys` 0.38.1,
+  whose build script uses `cfg_select!` — stable only on Rust ~1.97+. On an
+  older stable toolchain (seen: 1.92.0) the build fails with "use of unstable
+  library feature `cfg_select`". Fix: `rustup update`. Not a code issue.
 - `musicbrainz_rs` 0.13.0 needs the `async` feature enabled (off by default)
   for `execute_async`/`execute_with_client_async` to exist at all. There's no
   free `set_user_agent()` function — construct

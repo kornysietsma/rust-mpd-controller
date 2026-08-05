@@ -6,3 +6,8 @@ authors = ["Korny Sietsma <korny@sietsma.com>"]
 license = "MIT"
 
 [dependencies]
+anyhow = "1.0.104"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"

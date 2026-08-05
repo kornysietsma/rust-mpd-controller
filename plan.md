@@ -149,26 +149,33 @@ still acts on MPD. Behaves identically to before the move.
 
 ---
 
-### Step 3 — `albumdb`: schema and connection
+### Step 3 — `albumdb`: schema and connection — DONE
 
-- [ ] `rusqlite` 0.40.1 with `bundled`.
-- [ ] `sql/schema.sql` — the tables from spec §4.2 with `IF NOT EXISTS`.
-- [ ] `open(path)` applying `journal_mode=DELETE`, `foreign_keys=ON`,
-      `busy_timeout=5000`.
-- [ ] `open_in_memory()` for tests, same schema.
+- [x] `rusqlite` 0.40.1 (`bundled`) added to `crates/albumdb/Cargo.toml`.
+- [x] `crates/albumdb/sql/schema.sql` — the spec §4.2 tables verbatim, with
+      `IF NOT EXISTS`.
+- [x] `crates/albumdb/src/connection.rs`: `open(path)` and `open_in_memory()`,
+      both applying `journal_mode=DELETE`, `foreign_keys=ON`,
+      `busy_timeout=5000` and the schema. Re-exported from `lib.rs` as
+      `albumdb::open` / `albumdb::open_in_memory`, plus `albumdb::Connection`
+      (re-export of `rusqlite::Connection`).
 
-**Automated:**
-- [ ] Opening a fresh DB creates both tables with every column from spec §4.2.
-- [ ] Opening twice is idempotent and preserves data.
-- [ ] All three pragmas read back correctly — **especially
-      `journal_mode = delete`**, since the whole point is that no `-wal`
-      sidecar is ever created for Dropbox to capture inconsistently.
-- [ ] Every `CHECK` constraint rejects a bad value: `rating = 6`,
-      `tag_state = 'nonsense'`, `match_policy = 'maybe'`.
-- [ ] `ON DELETE CASCADE` removes an album's genre rows.
+**Automated (8 tests, all passing):** full column presence in both tables,
+idempotent re-open with data preserved, pragma readback, every `CHECK`
+constraint rejects a bad value, `ON DELETE CASCADE` removes genre rows. Note
+for anyone touching this later: an in-memory SQLite DB always reports
+`journal_mode = memory` regardless of what's requested, so the
+`journal_mode = delete` assertion runs against an on-disk DB instead.
 
-**Manual:** create a DB on disk; confirm no `.db-wal` or `.db-shm` appears
-alongside it.
+**Manual:** confirmed on disk via a throwaway example binary (since deleted)
+that only `albums.db` exists after writing and closing — no `-wal`/`-shm`
+sidecar.
+
+Toolchain gotcha hit and fixed (`rustup update`) — see `AGENTS.md`.
+
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (albumdb 8/8,
+controller 57/57, album-tool 0 — still a stub).
 
 ---
 
