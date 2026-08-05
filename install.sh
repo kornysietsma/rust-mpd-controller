@@ -7,7 +7,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-cargo bundle --release
+cargo bundle --release -p controller
 
 app_name="MpdController.app"
 built_app="target/release/bundle/osx/${app_name}"

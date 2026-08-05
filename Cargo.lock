@@ -22,6 +22,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "album-tool"
+version = "0.1.0"
+
+[[package]]
+name = "albumdb"
+version = "0.1.0"
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -161,6 +169,26 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "log",
+ "mpd_client",
+ "percent-encoding",
+ "pretty_assertions",
+ "serde",
+ "shlex",
+ "simplelog",
+ "tao",
+ "tokio",
+ "toml 1.1.3+spec-1.1.0",
+ "tray-icon",
+ "url",
 ]
 
 [[package]]
@@ -1569,26 +1597,6 @@ dependencies = [
  "getrandom 0.2.17",
  "libredox",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "rust-mpd-controller"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "log",
- "mpd_client",
- "percent-encoding",
- "pretty_assertions",
- "serde",
- "shlex",
- "simplelog",
- "tao",
- "tokio",
- "toml 1.1.3+spec-1.1.0",
- "tray-icon",
- "url",
 ]
 
 [[package]]

@@ -113,36 +113,39 @@ repo, so there was no in-repo throwaway code to delete.
 
 ---
 
-### Step 2 — Workspace split
+### Step 2 — Workspace split — DONE
 
-The highest-regression-risk step in the plan, and it changes no behaviour.
+- [x] Workspace root `Cargo.toml` created (`[workspace]`, members
+      `crates/controller`, `crates/albumdb`, `crates/album-tool`).
+- [x] `src/*.rs` and `assets/` moved verbatim to `crates/controller/`, via
+      `git mv`. No code changes.
+- [x] `[package.metadata.bundle]` moved to `crates/controller/Cargo.toml`;
+      bundle asset paths (`assets/icon.icns` etc.) still resolve since they're
+      relative to that manifest.
+- [x] Empty `crates/albumdb` (lib) and `crates/album-tool` (bin, stub `main`)
+      created.
+- [x] `install.sh` updated: `cargo bundle --release` → `cargo bundle --release
+      -p controller` — required once the workspace root has no package of its
+      own for `cargo bundle` to default to.
 
-- [ ] Create workspace root `Cargo.toml`.
-- [ ] Move `src/*.rs` → `crates/controller/src/`, verbatim. **No code changes.**
-- [ ] Move `[package.metadata.bundle]`, `osx_url_schemes` and
-      `osx_info_plist_exts` to `crates/controller/Cargo.toml`. Check
-      `assets/` paths still resolve.
-- [ ] Create empty `crates/albumdb` and `crates/album-tool`.
-- [ ] Check `install.sh` for hard-coded paths into `src/` or `target/`.
+**Package rename:** the `controller` crate's package name is now `controller`
+(was `rust-mpd-controller`), matching spec §3.2's crate table. This changes
+the built binary's filename (`target/release/controller`, was
+`rust-mpd-controller`) but not the bundled app name (`MpdController.app`,
+set separately via `metadata.bundle.name`) — nothing else referenced the old
+binary name.
 
-**Automated:** `cargo test --workspace` — all **56** existing tests still pass
-(38 in `menu`, 9 in `command`, 5 in `main`, 4 in `config`).
+**Automated:** `cargo test --workspace` — 57 passed, 0 failed (plan's original
+"56" estimate was stale by one test already added in `main.rs` before this
+step; not a regression from the move). `cargo fmt --all` and
+`cargo clippy --workspace --all-targets -- -D warnings` both clean.
 
-**Manual — this is the part that matters.** A `cargo run` success proves
-nothing here; several known bugs in this app only reproduce in the installed
-bundle (see `AGENTS.md`, "load-bearing oddities"). So:
-
-- [ ] Build and install the bundle via `install.sh`.
-- [ ] Launch it. Confirm the tray icon appears and the app stays out of the
-      Dock (`ActivationPolicy::Accessory` + `LSUIElement`).
-- [ ] Open the menu: playback controls, album traversal, playlist membership,
-      "Add to", and both copy-URI rows are present and correct.
-- [ ] Trigger an `mpdcontrol://` URL and confirm it acts on MPD.
-
-Per `AGENTS.md`, **ask what the tray shows** rather than screenshotting.
-
-**Done when:** the app behaves identically to before the move. If anything
-regressed, fix it here — do not carry it forward.
+**Manual — verified against the installed bundle**, per `AGENTS.md`'s warning
+that several bugs only reproduce there, not under `cargo run`: built and
+installed via `install.sh`, launched, confirmed by Korny — tray icon present,
+app stays out of the Dock, full menu (playback, album traversal, playlist
+membership, "Add to", both copy-URI rows) intact, and an `mpdcontrol://` URL
+still acts on MPD. Behaves identically to before the move.
 
 ---
 
