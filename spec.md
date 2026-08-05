@@ -165,9 +165,9 @@ Recorded because they cost time and will recur:
 rust-mpd-controller/
 ├── Cargo.toml              # [workspace]
 ├── crates/
-│   ├── albumdb/            # schema, migrations, queries, domain types
+│   ├── albumdb/            # schema, queries, domain types
 │   ├── controller/         # existing menu-bar app, moved verbatim
-│   └── album-tool/         # CLI: scan / import / sync / status
+│   └── album-tool/         # CLI: scan / sync / status
 └── docs/
 ```
 
@@ -185,7 +185,7 @@ by building and running the app before any new work starts.
 
 | Crate | Depends on | Responsibility |
 |---|---|---|
-| `albumdb` | `rusqlite`, `serde`, `anyhow` | Schema + migrations, all SQL, domain types (`Album`, `TagState`, `Rating`), track-range parsing. No network, no MPD. |
+| `albumdb` | `rusqlite`, `serde`, `anyhow` | Schema, all SQL, domain types (`Album`, `TagState`, `Rating`), track-range parsing. No network, no MPD. |
 | `controller` | `albumdb` + existing deps | Unchanged in v1. |
 | `album-tool` | `albumdb`, `clap`, `musicbrainz_rs`, `tokio`, `mpd_client` | CLI. Talks to MPD and MusicBrainz, writes via `albumdb`. |
 
@@ -308,9 +308,18 @@ CREATE TABLE album_genres (
 );
 
 CREATE INDEX idx_genres_genre ON album_genres(genre);
-
-CREATE TABLE schema_version (version INTEGER NOT NULL);
 ```
+
+All statements use `IF NOT EXISTS`. There is deliberately **no migration
+mechanism and no version marker** — this is a single-user tool, so schema
+changes are applied by hand: back up the file (or `.dump` it to SQL), then
+`ALTER TABLE ADD COLUMN`, or the standard create/copy/drop/rename procedure for
+the rarer cases SQLite can't alter in place, such as changing a `CHECK`
+constraint. Both preserve existing data, so no hand-entered value is ever at
+risk.
+
+A stored version number is not worth it here: a hand-applied change would leave
+it stale, and a stale marker is worse than none.
 
 **Design notes**
 
@@ -427,16 +436,19 @@ without writing.
 
 ---
 
-## 6. `album-tool import`
+## 6. Ratings import — a one-off script, not part of the tool
 
-```
-album-tool import <csv> [--dry-run]
-```
+**This is explicitly not a Rust subcommand.** It runs exactly once against real
+data, so it is a throwaway Python script (`uv`, PEP 723 inline metadata) at
+`scripts/import_ratings.py`, and carries no automated tests. Correctness is
+established by inspecting the resulting data, not by a test suite.
 
-One-off import of `all_albums_export.csv`. Only the `rating` column is
-imported — artist, album and date all come from tags or MusicBrainz.
+It is committed to git for posterity and deleted once the work is complete —
+history keeps the record. It takes the CSV and database paths as arguments, so
+that nothing under the gitignored `album-data/` is baked into a tracked file.
 
-Mapping of the `rating` column:
+Only the `rating` column of `all_albums_export.csv` is imported — artist, album
+and date all come from tags or MusicBrainz.
 
 | CSV value | Effect |
 |---|---|
@@ -446,21 +458,19 @@ Mapping of the `rating` column:
 | `c` | `is_classical = 1`, rating untouched |
 
 Matching is by exact `file` path against `albums.path`, after stripping any
-trailing slash.
+trailing slash. **It must run after a `scan`**, since it only updates rows that
+already exist.
 
-Sanity checks, reported before any write:
+The measurement in §2.6 is what makes this safe to do without ceremony: all
+1,848 CSV paths already exist in MPD, so there is no unmatched-path case to
+design around. The single duplicate (`Compilations/Sound Environment`) is
+ignored — last row wins, to be corrected by hand afterwards if it matters.
 
-- Rows whose path is not in the database. **Currently expected: zero** (§2.6) —
-  a non-zero count means the library moved and should be investigated, not
-  worked around.
-- Duplicate paths in the CSV. **Currently expected: exactly one** —
-  `Compilations/Sound Environment`. Last row wins; the collision is reported.
-- Unrecognised values in the `rating` column. Reported and skipped, never
-  guessed at.
-- Rows already carrying a different rating in the database. Reported; `--force`
-  required to overwrite, so a re-run cannot silently revert hand edits.
+Expected result, verifiable with `album-tool status` or plain SQL:
+**416 ratings, 69 `is_classical`, 17 `needs_relisten`.**
 
-`import` is expected to run once. It must be safe to re-run.
+Genuinely throwaway — once the ratings are in the database, the database is the
+source of truth and the CSV is history.
 
 ---
 
@@ -552,7 +562,7 @@ Read-only report:
 ## 9. Deferred
 
 Explicitly out of scope for v1, with the schema already in place so none needs
-a migration.
+a schema change.
 
 - **`album-tool verify`** — re-check tags against current MusicBrainz data and
   flag drift, merged releases, and disagreements, writing `mb_verify_state`,
@@ -575,7 +585,7 @@ one is confirmed working against the real library.
    workspace root, add empty `albumdb` and `album-tool` crates. **Build and run
    the menu-bar app; confirm the tray icon, menu and `mpdcontrol://` URL scheme
    all still work.** Nothing else changes.
-2. **`albumdb`**: schema, migrations, pragmas, domain types, `original_tracks`
+2. **`albumdb`**: schema, pragmas, domain types, `original_tracks`
    range parser. Unit tests for the parser and for `tag_state` derivation as a
    pure function over track tag sets.
 3. **`album-tool scan`**: MPD reading with correct chunking and quoting, album
@@ -583,9 +593,8 @@ one is confirmed working against the real library.
    §2.1 and §5.4 — those tables are the acceptance criteria.
 4. **Rename reconciliation**: fingerprinting and the missing/rename logic.
    Test by renaming a directory and re-scanning; the rating must survive.
-5. **`album-tool import`**: CSV import with all sanity checks. Verify 416
-   ratings, 69 `is_classical`, 17 `needs_relisten`, one reported duplicate,
-   zero unmatched paths.
+5. **Ratings import script** (Python, one-off). Verify 416 ratings, 69
+   `is_classical`, 17 `needs_relisten` by inspecting the data.
 6. **`album-tool status`**.
 7. **`album-tool sync`**: rate limiting, User-Agent, retry/backoff,
    deduplication by release group, resumability. Test with `--limit 5` before
@@ -593,8 +602,8 @@ one is confirmed working against the real library.
 
 ### Acceptance
 
-A full `scan` + `import` + `sync` against the live library produces a database
-where:
+A full `scan`, then the ratings import script, then `sync`, against the live
+library produces a database where:
 
 - 1,886 albums are present with the `tag_state` distribution in §5.4.
 - 416 ratings, 69 `is_classical`, 17 `needs_relisten` are set.
