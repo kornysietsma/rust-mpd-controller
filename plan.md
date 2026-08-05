@@ -36,11 +36,15 @@ Therefore:
        (I/O, thin)   plain struct    (all the logic)          (sqlite)
 ```
 
-- `SongTags` is a plain owned struct (`path: String`, `tags: BTreeMap<String, Vec<String>>`
-  or named fields) defined in `albumdb`. It is *not* an `mpd_client` type.
+- `SongTags` is a plain owned struct with named fields (`path: String`,
+  `album: Option<String>`, ...), decided in Step 4 over a generic
+  `BTreeMap<String, Vec<String>>` — the set of tags this project needs is
+  fixed and known, so compiler-checked field names beat a string-keyed map.
+  Defined in `crates/albumdb/src/song_tags.rs`. It is *not* an `mpd_client`
+  type.
 - Everything interesting — grouping into albums, `tag_state` derivation,
-  title/artist resolution, fingerprinting — is a **pure function over
-  `Vec<SongTags>`** and is fully testable with hand-built values.
+  title/artist resolution — is a **pure function over `Vec<SongTags>`** and
+  is fully testable with hand-built values.
 - The MPD layer's only job is producing `Vec<SongTags>`. It sits behind a
   trait so the fixture can substitute for it.
 
@@ -179,41 +183,61 @@ controller 57/57, album-tool 0 — still a stub).
 
 ---
 
-### Step 4 — `albumdb`: domain types and pure logic
+### Step 4 — `albumdb`: domain types and pure logic — DONE
 
 All pure, all unit-testable, no I/O. These are the "small complex functions
 with real complexity" that the standards say unit tests are *for*.
 
-- [ ] `SongTags` plain struct (§1.2).
-- [ ] Enums: `TagState`, `TitleSource`, `MatchPolicy`, sync/verify states, with
-      `as_str`/`from_str` matching the `CHECK` constraints exactly.
-- [ ] `derive_tag_state(&[SongTags]) -> TagState` per spec §5.4.
-- [ ] `normalise_date` — `'0000'` and empty → `None`.
-- [ ] `parse_album_path(&str) -> (title, artist)` per spec §5.3.
-- [ ] `TrackRange` — parse and format `'1-10'`, `'1-12,14'`, `None`.
-- [ ] `fingerprint(&[SongTags]) -> String` per spec §5.2.
+- [x] `SongTags` plain struct (§1.2). Named fields (not a `BTreeMap`) — a
+      deliberate choice discussed with Korny: the set of tags this project
+      needs is fixed and known, so compiler-checked field names beat a
+      string-keyed map.
+- [x] Enums: `TagState`, `TitleSource`, `MatchPolicy`, sync/verify states
+      (`SyncState`, `VerifyState`), with `as_str`/`FromStr` matching the
+      schema's allowed values exactly — `status`, `match_policy` and
+      `tag_state` via a real `CHECK` constraint, the other three via the
+      schema's documentation comment (§4.2 has no `CHECK` for them).
+- [x] `derive_tag_state(&[SongTags]) -> TagState` per spec §5.4.
+- [x] `normalise_date` — `'0000'` and empty → `None`.
+- [x] `parse_album_path(&str) -> Result<(title, artist), String>` per spec
+      §5.3 — an unmatched path is an error, not a best-effort guess, per
+      Korny: it means either the data is wrong or a new case exists, and
+      either way it should be visible, not silently papered over.
+- [x] `TrackRange` — parse and format `'1-10'`, `'1-12,14'`, `None`.
 
-**Automated:**
-- [ ] `derive_tag_state` — one test per state, all six. Include the trap
-      explicitly: **many artists with a single `AlbumArtist` and one year is
+**Automated (32 new tests, all passing):**
+- [x] `derive_tag_state` — one test per state, all six, including the trap:
+      **many artists with a single `AlbumArtist` and one year is
       `no_mbid_consistent`, not `varied`** (spec §2.5).
-- [ ] `Date = '0000'` alone → `None`; mixed `['0000', '1787']` → treated as
+- [x] `Date = '0000'` alone → `None`; mixed `['0000', '1787']` → treated as
       one year, not a variation.
-- [ ] Path parsing for all four patterns in spec §5.3, plus a path containing
+- [x] Path parsing for all four patterns in spec §5.3, plus a path containing
       an apostrophe.
-- [ ] `TrackRange` round-trips: `parse(format(x)) == x`. Rejects `'0-5'`,
+- [x] `TrackRange` round-trips: `parse(format(x)) == x`. Rejects `'0-5'`,
       `'5-1'`, `'abc'`, `''`.
-- [ ] `fingerprint` is stable under track reordering, and differs when the
-      track set differs.
+
+**Revised after Korny review:** `fingerprint`/automatic rename-matching was
+cut entirely, along with the `fingerprint` schema column and the `sha2`
+dependency it needed. Disappearances are already soft-deleted
+(`status = 'missing'`, never removed), so the only real risk was losing a
+rating — and that's already prevented without matching renames. A moved
+directory now just shows up as one new row and one `missing` row; `scan`'s
+report lists both so a genuine rename is obvious and fixable by hand. Spec
+§5.2, §5.5, §8, §9 and §10 updated to match; see Step 9 below for the revised
+reconciliation step.
+
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (albumdb 40/40,
+controller 57/57, album-tool 0 — still a stub).
 
 ---
 
 ### Step 5 — `albumdb`: queries
 
 - [ ] `upsert_album` — writes derived fields, **never touches user-editable
-      columns**.
-- [ ] `find_by_path`, `find_by_fingerprint`, `all_present`.
-- [ ] `rename_album(album_id, new_path)`.
+      columns**. Called for a path whether it's brand new or reappearing
+      after `missing` — either way it sets `status = 'present'`.
+- [ ] `find_by_path`, `all_present`.
 - [ ] `mark_missing(album_id)`.
 - [ ] `replace_genres(album_id, source, genres)` — replaces one source, leaves
       the other alone.
@@ -228,7 +252,8 @@ preference for module-level tests):
 - [ ] `replace_genres(.., 'mb', ..)` leaves `source = 'tag'` rows intact, and
       vice versa.
 - [ ] Re-running `replace_genres` with the same source doesn't duplicate rows.
-- [ ] `rename_album` preserves `album_id` and all user fields.
+- [ ] An album marked `missing` then re-`upsert_album`'d at the same path
+      goes back to `status = 'present'` with its user fields untouched.
 
 ---
 
@@ -314,25 +339,38 @@ expect: 1886 albums
 
 ---
 
-### Step 9 — `scan`: reconciliation
+### Step 9 — `scan`: missing-album handling
+
+No automatic rename detection (spec §5.2, §9) — cut after review as
+unmeasured complexity. Disappearances are soft-deleted, so the only real risk
+was losing a rating, and that's already prevented without matching renames. A
+moved directory shows up as one new (unrated) row and one `missing` row that
+still carries its rating; reconciling that by hand (repoint the old row's
+`path`, drop the duplicate) is a manual SQL job, not a tool feature, for now.
 
 - [ ] Diff MPD paths against stored paths.
-- [ ] Match disappearance ↔ appearance by fingerprint → `rename_album`.
-- [ ] Unmatched disappearances → `status = 'missing'`. **Never delete a row** —
-      deleting silently discards a rating.
+- [ ] Path in MPD only → `upsert_album` inserts a new row (Step 8 already
+      does this for a first scan; confirm it composes correctly once existing
+      rows are in play too).
+- [ ] Path in DB only → `mark_missing`. **Never delete a row** — deleting
+      silently discards a rating.
+- [ ] `scan`'s report lists new and missing paths side by side (spec §5.5),
+      so a genuine rename is obvious at a glance.
 
 **Automated:**
-- [ ] Scan fixture, rate an album, rename its directory in a modified fixture,
-      re-scan → same `album_id`, rating intact, one rename reported.
-- [ ] Remove an album entirely → `status = 'missing'`, row still present,
-      rating intact.
-- [ ] A removal and an unrelated addition in the same scan are **not** paired
-      as a rename.
-- [ ] An album returning after being `missing` goes back to `present` and
-      keeps its rating.
+- [ ] Remove an album entirely (drop it from a modified fixture) → re-scan →
+      `status = 'missing'`, row still present, rating intact.
+- [ ] An album returning after being `missing` (same path reappears in the
+      fixture) → re-scan → back to `status = 'present'`, rating intact.
+- [ ] Renaming a directory in a modified fixture → re-scan → the old path's
+      row is `missing` with its rating intact, and a new unrated row exists
+      at the new path. Confirms it's *not* silently merged and nothing is
+      lost either way.
 
 **Manual:** rename a real album directory, `mpc update`, re-scan, confirm the
-rating survived. Then rename it back.
+old row is `missing` with its rating intact and a new unrated row exists at
+the new path. Rename it back, re-scan, confirm it returns to `present` with
+the rating.
 
 ---
 

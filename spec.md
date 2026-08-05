@@ -245,7 +245,6 @@ CREATE TABLE albums (
 
     -- identity / presence
     status              TEXT    NOT NULL DEFAULT 'present',  -- present | missing
-    fingerprint         TEXT,                       -- for rename detection, §5.2
     first_seen          TEXT    NOT NULL,
     last_seen           TEXT    NOT NULL,
 
@@ -328,7 +327,7 @@ it stale, and a stale marker is worse than none.
 
 - **Album-level only — there is no tracks table.** Anything track-shaped is
   queried live from MPD. `track_count` and `disc_count` are cached because
-  `status` reporting and fingerprinting need them.
+  `status` reporting needs them.
 - **Three independent state concerns**, each changed for its own reasons and
   unable to corrupt the others: `tag_state` (derived, rewritten every scan),
   the `mb_sync_*` / `mb_verify_*` groups (written only by their own command),
@@ -369,19 +368,26 @@ Reads MPD, writes `albums`. Idempotent. No network beyond MPD.
 ### 5.2 Reconciling against existing rows
 
 - Path present in both MPD and DB → update derived fields.
-- Path in MPD only → candidate new album.
-- Path in DB only → candidate disappearance.
+- Path in MPD only → new row.
+- Path in DB only → `status = 'missing'`.
 
-For each candidate disappearance, look for a candidate new album with a
-matching **fingerprint**; if found, treat it as a rename and `UPDATE` the
-existing row's `path`, preserving `album_id` and every user-editable field.
+Disappearances are **never deleted** — deleting would silently discard a
+rating. `status` reports them.
 
-The fingerprint is a stable hash over: track count, the sorted set of track
-titles, and the sorted set of distinct `MUSICBRAINZ_TRACKID` values (empty for
-untagged albums, in which case titles carry the match).
+**There is no automatic rename detection.** A moved or renamed directory
+therefore shows up as one new (unrated) row and one `missing` row that still
+carries its rating. `scan`'s output lists both by path, so a genuine rename is
+obvious at a glance and can be fixed by hand — repoint the old row's `path`
+back to the new location and remove the duplicate — if it's worth the effort.
 
-Unmatched disappearances are set to `status = 'missing'` and **never deleted** —
-deleting would silently discard a rating. `status` reports them.
+This was a deliberate simplification, cut after review: an earlier version of
+this spec matched disappearances to new albums by a content-based
+fingerprint, purely on the assumption that renames would be common enough to
+bother automating. That assumption was never measured. Since disappearances
+are already preserved rather than deleted, the actual failure mode of *not*
+auto-matching is "an extra row to tidy up by hand," not lost data — not worth
+the fingerprinting machinery it would take to close. See §9 for the deferred
+version of this.
 
 ### 5.3 Populating title and artist
 
@@ -401,6 +407,12 @@ Path parsing:
 | `Compilations/<album>` | `<album>` | `Various Artists` |
 | `Unnmatched/<artist>/<album>` | `<album>` | `<artist>` |
 | `Unnmatched/<album>` | `<album>` | NULL |
+
+A path matching none of these four patterns is a hard error, not a
+best-effort guess — it means either the data is wrong or a new directory
+shape has appeared that this spec doesn't account for, and either way `scan`
+should stop and surface the offending path rather than silently invent a
+title for it.
 
 A row whose `title_source = 'manual'` is never overwritten by a scan.
 
@@ -433,8 +445,9 @@ mechanism.**
 
 ### 5.5 Output
 
-Counts of albums added, renamed, updated, and newly missing; the `tag_state`
-distribution; and a list of anything needing attention. `--dry-run` reports
+Counts of albums added, updated, and newly missing; the `tag_state`
+distribution; and a list of anything needing attention (new and missing paths
+side by side, so a rename is obvious at a glance — §5.2). `--dry-run` reports
 without writing.
 
 ---
@@ -556,8 +569,8 @@ album-tool status
 Read-only report:
 
 - Album counts by `tag_state` and by `mb_sync_state`.
-- Albums with `status = 'missing'` — directories that vanished and could not be
-  matched to a rename.
+- Albums with `status = 'missing'` — directories that vanished from MPD.
+  Possibly a genuine deletion, possibly a rename (§5.2) worth fixing by hand.
 - `mixed_mbid` and `partial_mbid` albums, **for manual fixing in Picard**. Per
   the brief, the tool reports and never edits files. Currently:
   `Billy Bragg/The Million Things That Never Happened` and
@@ -581,6 +594,13 @@ a schema change.
   album menu labels; "play a random 5-star album, excluding classical and
   spoken word"; playing only the original tracks via `original_tracks`.
 - **Category derivation from MusicBrainz genres** (§7.3).
+- **Automatic rename reconciliation** — matching a disappeared directory to a
+  newly-appeared one by content fingerprint, so a moved/renamed album keeps
+  its `album_id` and rating without manual intervention. Cut from v1 (§5.2):
+  it assumed renames would be common enough to justify the machinery, but
+  that was never measured, and since disappearances are already preserved
+  rather than deleted, the manual fix is cheap. Revisit if `status` starts
+  showing renames as a repeated nuisance.
 
 ---
 
@@ -599,8 +619,10 @@ one is confirmed working against the real library.
 3. **`album-tool scan`**: MPD reading with correct chunking and quoting, album
    grouping, `tag_state`, title/artist resolution. Verify against the counts in
    §2.1 and §5.4 — those tables are the acceptance criteria.
-4. **Rename reconciliation**: fingerprinting and the missing/rename logic.
-   Test by renaming a directory and re-scanning; the rating must survive.
+4. **Missing-album handling**: unmatched disappearances become
+   `status = 'missing'`, never deleted (no automatic rename matching — §5.2,
+   §9). Test by removing a directory from the fixture and re-scanning; the
+   rating on the `missing` row must survive.
 5. **Ratings import script** (Python, one-off). Verify 416 ratings, 69
    `is_classical`, 17 `needs_relisten` by inspecting the data.
 6. **`album-tool status`**.

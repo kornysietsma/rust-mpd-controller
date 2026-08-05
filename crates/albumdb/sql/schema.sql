@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS albums (
 
     -- identity / presence
     status              TEXT    NOT NULL DEFAULT 'present',  -- present | missing
-    fingerprint         TEXT,                       -- for rename detection
     first_seen          TEXT    NOT NULL,
     last_seen           TEXT    NOT NULL,
 

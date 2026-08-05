@@ -63,7 +63,6 @@ mod tests {
             "album_id",
             "path",
             "status",
-            "fingerprint",
             "first_seen",
             "last_seen",
             "title",
