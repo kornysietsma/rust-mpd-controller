@@ -356,43 +356,55 @@ albumdb 52/52, controller 57/57).
 
 ---
 
-### Step 7 — MPD library reader
+### Step 7 — MPD library reader — DONE
 
-Connects to MPD at `localhost:<port>` — `mpd_host` was hardcoded in Step 6
-(spec §4.1), and `mpd_conf::MpdConf.port` (already parsed off the real
-`mpd.conf`, currently only `music_directory` is used) is exactly the port to
-connect on. Thread it through rather than hardcoding `6600` a second time.
+- [x] `LibrarySource` trait (§1.3), deliberately synchronous — the real
+      implementation owns a private current-thread `tokio::runtime::Runtime`
+      for the call, matching the plan's asymmetric trait signatures (`sync`'s
+      `MusicBrainzClient` stays async).
+- [x] `MpdLibrarySource` (`crates/album-tool/src/library.rs`): `listfiles` →
+      top-level dirs, `lsinfo` per top → chunk boundaries plus loose tagged
+      files, `find "(base '<chunk>')"` per chunk, de-duplicated by path.
+      `mpd_client`'s `Filter` type has no `base` support, so `find`/`lsinfo`/
+      `listfiles` are hand-rolled `Command` impls (AGENTS.md).
+- [x] Two-level quoting helper (`mpd_wire::base_filter`, spec §2.7).
+- [x] `FixtureLibrarySource` (test-only) reading the committed
+      `crates/album-tool/tests/fixtures/library.txt` — 20 invented albums (44
+      songs) covering all six `tag_state` values, `Date '0000'`, a multi-disc
+      album, a missing `AlbumArtist`, an apostrophe path, and all four
+      `parse_album_path` patterns. This fixture is reused by Steps 8–9.
+- [x] `crates/album-tool/src/mpd_wire.rs`: the shared pure parser
+      (`parse_directory_listing`) used by both the real MPD commands and the
+      fixture loader, since the fixture file uses the same `key: value` line
+      shape MPD's protocol does.
 
-- [ ] `LibrarySource` trait (§1.3).
-- [ ] Real implementation: `listfiles` → top-level dirs, `lsinfo` per top →
-      chunk boundaries, `find "(base '<chunk>')"` per chunk, de-duplicated by
-      path.
-- [ ] **Two-level quoting** helper (spec §2.7) — escape for the inner
-      single-quoted filter, then again for the outer double-quoted argument.
-- [ ] Fixture implementation reading the committed fixture file.
-- [ ] Write `crates/album-tool/tests/fixtures/library.txt`: ~20 invented
-      albums covering all six `tag_state` values, `Date '0000'`, a multi-disc
-      album, a missing `AlbumArtist`, and a path with an apostrophe.
+**Automated:** 19 new tests (album-tool 27/27, albumdb 52/52, controller
+57/57 — all quality gates clean).
 
-**Automated:**
-- [ ] Quoting helper unit tests — this is regex-grade fiddly logic and exactly
-      what unit tests are for. Must handle
-      `A Wake-Up Call for the '90s_ Epic_Associated Hard Rock Sampler`, which
-      is a real path in the library and broke the first attempt.
-- [ ] Response parsing produces the expected `SongTags`.
-- [ ] De-duplication when a top-level chunk overlaps its own subdirectories.
+**Manual against live MPD:** `album-tool scan --dry-run` (wired
+provisionally into the `Scan` handler — reads and counts songs; grouping and
+writing are Step 8) reads exactly **29,028** songs across **1,886** distinct
+directories, matching spec §2.1 and MPD's own `stats` output. Caught and
+fixed one real bug this way — `listfiles`'s `file` entries are untagged
+filesystem noise, not songs (spec §2.7, AGENTS.md).
 
-**Manual against live MPD:**
-- [ ] Total songs read = **29,028**; distinct directories = **1,886**.
-- [ ] Do **not** try `find "(base '')"` over the whole library — it returns
-      zero rows because the response is too large. Chunking is not an
-      optimisation, it is required.
+**Spec updated:** §2.7 gained the `listfiles` finding; §4.1 clarified that
+`--db-path` bypasses only database-path derivation — `mpd.conf` is still read
+for the port whenever a command needs to reach MPD.
 
 ---
 
 ### Step 8 — `scan`: grouping, `tag_state`, title/artist
 
 No reconciliation yet. Every scan is treated as a first scan.
+
+**Starting point:** `LibrarySource`/`MpdLibrarySource`/`FixtureLibrarySource`
+already exist (`crates/album-tool/src/library.rs`), returning `Vec<SongTags>`.
+The `Scan` handler in `crates/album-tool/src/main.rs` currently just reads and
+prints a song count via `MpdLibrarySource` — replace that body with the real
+grouping/`upsert_album` logic. The fixture at
+`crates/album-tool/tests/fixtures/library.txt` is ready for the automated test
+below.
 
 - [ ] Group songs by containing directory.
 - [ ] Derive `tag_state`, resolve title/artist and `title_source` (spec §5.3).

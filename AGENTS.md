@@ -96,6 +96,24 @@ Known gotchas already found this way, so you don't have to re-derive them:
   `api_bindium` — relevant to the "max 1 request/s" rule in spec §7.1, still
   to be decided when building `sync`: rely on it, or wrap it with the injected
   `Clock` for deterministic tests.
+- `mpd_client` 1.4.1's `filter::Filter` type only supports tag comparisons
+  (`Filter::tag`, `Filter::new(tag, operator, value)`) — there is no `base`
+  variant, so it can't express `(base '<path>')`. There's also no typed
+  command for `find`/`lsinfo`/`listfiles`. `album-tool/src/library.rs` hand-
+  rolls all three as `Command` impls (same pattern as `controller`'s
+  `AddRecursive`/`ListPlaylist`), and `album-tool/src/mpd_wire.rs` builds the
+  `base` filter clause by hand. Its inner escaping (backslash then
+  apostrophe, spec §2.7) only needs to handle `\`/`'` — the *outer*
+  protocol-level escaping (backslash-escaping `'`/`"`/`\`, wrapping in double
+  quotes because paths contain spaces) is applied automatically by
+  `mpd_protocol::command::escape_argument` once the clause is passed through
+  `RawCommand::argument`, so there's nothing to duplicate there.
+- `Song::from_frame_multi`/`SongInQueue::from_frame_multi` (the response
+  parsers `Find`/`Queue`/etc. use internally) are `pub(crate)` inside
+  `mpd_client` — not reachable from outside the crate. Any hand-rolled
+  `Command` (see above) has to parse `Frame`'s `(key, value)` pairs itself;
+  `mpd_wire::parse_directory_listing` is that parser for this project, shared
+  by the real MPD commands and the fixture loader alike.
 
 ## Load-bearing oddities — don't "clean these up"
 

@@ -25,9 +25,12 @@ dependencies = [
 name = "album-tool"
 version = "0.1.0"
 dependencies = [
+ "albumdb",
  "anyhow",
  "clap",
+ "mpd_client",
  "pretty_assertions",
+ "tokio",
 ]
 
 [[package]]

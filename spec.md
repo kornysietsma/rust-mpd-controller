@@ -156,6 +156,14 @@ Recorded because they cost time and will recur:
   be discovered over TCP — it must be configured. (§4.1 works around this by
   reading `mpd.conf` directly off disk, since `album-tool` always runs on the
   same machine as MPD.)
+- **`listfiles`'s `file` entries carry no tag data and aren't database
+  songs.** Unlike `lsinfo`/`find`, `listfiles` is a raw filesystem browse —
+  it lists any file MPD finds on disk, recognized or not. Confirmed live:
+  the real music directory's true root holds 46 such stray non-audio files.
+  Treating them as songs over-counted the library past MPD's own `stats`
+  total. Use `listfiles` only for top-level directory names; loose *tagged*
+  files one level down are still caught correctly via `lsinfo`, which does
+  carry full tag data for them.
 
 ---
 
@@ -230,13 +238,16 @@ machine — true today and a reasonable constraint for a tool that needs
 filesystem access to the database anyway.
 
 `mpd.conf` defaults to `~/.mpd/mpd.conf`, overridable with `--mpd-conf <path>`.
-`--db-path <path>` bypasses derivation entirely, for pointing at a scratch or
-test database without touching `mpd.conf`. `mpd_host` is hardcoded to
-`localhost` — reading `mpd.conf` from the local filesystem already establishes
-that MPD is local, and `bind_to_address` doesn't reliably name a reachable
-address anyway. **`album-tool` therefore has no TOML config file of its own**
-— everything it needs is either derived from `mpd.conf` or passed on the
-command line.
+`--db-path <path>` bypasses *database path* derivation only — a command still
+reads `mpd.conf` for the **port** whenever it needs to actually talk to MPD
+(e.g. `scan`), independent of where the database file lives. This is
+deliberate: `--db-path` exists so a scratch or test database doesn't have to
+sit inside a real `music_directory`, not to make `album-tool` avoid MPD
+entirely. `mpd_host` is hardcoded to `localhost` — reading `mpd.conf` from the
+local filesystem already establishes that MPD is local, and `bind_to_address`
+doesn't reliably name a reachable address anyway. **`album-tool` therefore has
+no TOML config file of its own** — everything it needs is either derived from
+`mpd.conf` or passed on the command line.
 
 The music folder is synced to Dropbox as backup and copied to a NAS over SMB,
 but is **never** written concurrently from two machines. Multi-writer safety is
