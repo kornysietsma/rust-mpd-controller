@@ -30,6 +30,7 @@ dependencies = [
  "clap",
  "mpd_client",
  "pretty_assertions",
+ "time",
  "tokio",
 ]
 

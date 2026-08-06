@@ -16,6 +16,12 @@ use crate::track_range::TrackRange;
 /// `ON CONFLICT` `SET` clause, so it is structurally impossible for this
 /// function to touch them: a fresh row gets their schema defaults, an
 /// existing row keeps whatever a person put there. Returns the `album_id`.
+///
+/// `title`/`artist`/`title_source` are the one exception written here that
+/// still needs a guard: if the existing row's `title_source` is already
+/// `'manual'`, a scan must never overwrite a hand-entered title (spec
+/// §5.3), so those three columns fall back to their current value in that
+/// case via `CASE WHEN`.
 pub fn upsert_album(conn: &Connection, facts: &AlbumFacts, now: OffsetDateTime) -> Result<i64> {
     let now = format_timestamp(now);
     conn.query_row(
@@ -35,9 +41,9 @@ pub fn upsert_album(conn: &Connection, facts: &AlbumFacts, now: OffsetDateTime) 
         ON CONFLICT(path) DO UPDATE SET
             status               = 'present',
             last_seen            = :now,
-            title                = :title,
-            artist               = :artist,
-            title_source         = :title_source,
+            title                = CASE WHEN title_source = 'manual' THEN title ELSE :title END,
+            artist               = CASE WHEN title_source = 'manual' THEN artist ELSE :artist END,
+            title_source         = CASE WHEN title_source = 'manual' THEN title_source ELSE :title_source END,
             date                 = :date,
             original_date        = :original_date,
             label                = :label,
@@ -330,6 +336,39 @@ mod tests {
         assert_eq!(after.tag_state, TagState::NoMbidVaried);
         assert_eq!(after.last_seen, "2026-08-05T00:00:00Z");
         assert_eq!(after.first_seen, before.first_seen);
+    }
+
+    /// Spec §5.3: a hand-entered title survives a scan. `title_source =
+    /// 'manual'` is not itself user-editable in the schema's "never
+    /// machine-written" sense (it's set by a future manual-edit command, not
+    /// listed under §4.2's user-editable block), but the same non-negotiable
+    /// invariant applies to it once set.
+    #[test]
+    fn upsert_never_overwrites_a_manual_title() {
+        let conn = open_in_memory().unwrap();
+        let t1 = datetime!(2026-08-01 00:00:00 UTC);
+        let t2 = datetime!(2026-08-05 00:00:00 UTC);
+
+        upsert_album(&conn, &facts("Albums/A/Artist/Album"), t1).unwrap();
+        conn.execute(
+            "UPDATE albums SET title = 'Hand-Entered Title', artist = 'Hand-Entered Artist', title_source = 'manual' WHERE path = 'Albums/A/Artist/Album'",
+            [],
+        )
+        .unwrap();
+
+        let mut different_facts = facts("Albums/A/Artist/Album");
+        different_facts.title = Some("Scanned Title".to_string());
+        different_facts.artist = Some("Scanned Artist".to_string());
+        upsert_album(&conn, &different_facts, t2).unwrap();
+
+        let after = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.title.as_deref(), Some("Hand-Entered Title"));
+        assert_eq!(after.artist.as_deref(), Some("Hand-Entered Artist"));
+        assert_eq!(after.title_source, Some(TitleSource::Manual));
+        // Other derived fields still update normally.
+        assert_eq!(after.last_seen, "2026-08-05T00:00:00Z");
     }
 
     #[test]

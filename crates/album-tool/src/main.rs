@@ -2,6 +2,7 @@ mod cli;
 mod library;
 mod mpd_conf;
 mod mpd_wire;
+mod scan;
 
 use std::path::PathBuf;
 
@@ -21,12 +22,21 @@ fn main() -> Result<()> {
         Command::Scan { dry_run } => {
             let port = resolve_mpd_port(&cli)?;
             let songs = MpdLibrarySource::new("localhost", port).songs()?;
-            println!(
-                "scan: read {} songs from MPD (db_path={}, dry_run={dry_run}); \
-                 grouping and writing not yet implemented",
-                songs.len(),
-                db_path.display()
-            );
+            let groups = scan::group_into_albums(songs)?;
+            let counts = scan::TagStateCounts::from_groups(&groups);
+
+            if dry_run {
+                println!("scan (dry run, nothing written): {} albums", groups.len());
+            } else {
+                let mut conn = albumdb::open(&db_path)?;
+                scan::write_albums(&mut conn, &groups, &albumdb::SystemClock)?;
+                println!(
+                    "scan: {} albums written to {}",
+                    groups.len(),
+                    db_path.display()
+                );
+            }
+            println!("{counts}");
         }
         Command::Sync { limit, force } => {
             println!(

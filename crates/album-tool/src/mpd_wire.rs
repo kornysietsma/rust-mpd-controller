@@ -38,9 +38,16 @@ pub struct DirListing {
 /// markers are ever returned), so `directories` is simply empty for those —
 /// no special-casing needed at the call site.
 ///
-/// Unrecognized fields (`playlist`, `Last-Modified`, and any tag this
-/// project doesn't track) are silently ignored, mirroring how
+/// Unrecognized fields (`Last-Modified`, `Added`, `Format`, `Time`,
+/// `duration`, `*Sort` fields, and any tag this project doesn't track) are
+/// silently ignored via [`apply_tag`]'s catch-all, mirroring how
 /// `mpd_client`'s own (private) `SongBuilder` treats them.
+///
+/// **`Last-Modified` is not a record boundary** — MPD sends it as the field
+/// immediately after every `file:` line, so treating it as one (an earlier
+/// version of this function did, alongside `playlist`) silently dropped
+/// every tag that followed it: confirmed live, every song came back with
+/// `path` set and every other field `None`.
 pub fn parse_directory_listing<I>(fields: I) -> DirListing
 where
     I: IntoIterator<Item = (String, String)>,
@@ -65,7 +72,7 @@ where
                 }
                 listing.directories.push(value);
             }
-            "playlist" | "Last-Modified" => {
+            "playlist" => {
                 if let Some(song) = current.take() {
                     listing.songs.push(song);
                 }
@@ -203,6 +210,36 @@ mod tests {
         assert_eq!(listing.songs[0].title, Some("A".to_string()));
         assert_eq!(listing.songs[1].path, "b.mp3");
         assert_eq!(listing.songs[1].title, Some("B".to_string()));
+    }
+
+    /// Regression test for a real bug: `Last-Modified` immediately follows
+    /// `file:` on every real MPD response (confirmed live), and an earlier
+    /// version of this parser treated it as a record boundary — silently
+    /// dropping every tag field that came after it, on every song, in the
+    /// real library. `Album` here is deliberately placed *after*
+    /// `Last-Modified`, matching MPD's actual field order.
+    #[test]
+    fn last_modified_does_not_terminate_the_current_song() {
+        let listing = parse_directory_listing(pairs(&[
+            ("file", "Albums/A/Artist/Album/01 - Song.mp3"),
+            ("Last-Modified", "2021-02-02T11:56:54Z"),
+            ("Added", "2025-09-07T10:09:12Z"),
+            ("Format", "44100:16:2"),
+            ("Artist", "Artist"),
+            ("AlbumArtist", "Artist"),
+            ("Album", "Album"),
+            ("MUSICBRAINZ_RELEASEGROUPID", "release-group-id"),
+        ]));
+
+        assert_eq!(listing.songs.len(), 1);
+        let song = &listing.songs[0];
+        assert_eq!(song.artist.as_deref(), Some("Artist"));
+        assert_eq!(song.album_artist.as_deref(), Some("Artist"));
+        assert_eq!(song.album.as_deref(), Some("Album"));
+        assert_eq!(
+            song.mb_release_group_id.as_deref(),
+            Some("release-group-id")
+        );
     }
 
     #[test]

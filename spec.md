@@ -98,16 +98,27 @@ This eliminates the "MP3 tags are a headache" concern from the brief entirely.
 
 Of the 50 directories with no MBID:
 
-- **42 are consistent** — one `Album`, one `AlbumArtist`, one year. Artists
-  vary per track, but that is a normal compilation with
-  `AlbumArtist=Various Artists`. **These tags are usable at album level.**
-- **5 are genuinely varied** — `Unnmatched/Various Artists/Songs for Becky`
-  (19 artists, 14 distinct years), `Christmas Music Compilation` (2 album
-  titles, 300 artists, 42 distinct years), `Solid Gold T. Rex [Disc 1]`,
-  `The Kleptones/Hectic City`, `Eine Kleine Nachtmusik_Symphonie #29`.
-- **3 have partial tags** — `Unnmatched/Madness` (no `Album`),
+- **43 are consistent** — one `Album`, one `AlbumArtist`, one year once the
+  junk year `'0000'` is normalised away. Artists vary per track, but that is
+  a normal compilation with `AlbumArtist=Various Artists`. **These tags are
+  usable at album level.** Includes `Eine Kleine Nachtmusik_Symphonie #29`
+  (Mozart) — its tracks carry `Date` values of either `1787` or `'0000'`, one
+  real year once the junk is filtered, per the same normalisation rule this
+  section documents below. An earlier pass of this measurement counted it as
+  varied by treating the mixed `1787`/`'0000'` as two distinct years, before
+  that rule was pinned down; §5.4's derivation (built and verified against
+  the live library, plan Step 8) applies the rule correctly and gets 43, not
+  42.
+- **3 are genuinely varied** — `Unnmatched/Various Artists/Songs for Becky`
+  (19 artists, 14 distinct years), `Solid Gold T. Rex [Disc 1]`,
+  `The Kleptones/Hectic City`.
+- **4 have partial tags** — `Unnmatched/Madness` (no `Album`),
   `Neil Gaiman/BBC Radio 4 - Neverwhere` and `Traditional/Activity Songs`
-  (no `AlbumArtist`).
+  (no `AlbumArtist`), and `Christmas Music Compilation` (2 album titles, 300
+  artists, 42 distinct years, **and exactly 1 of its 300 tracks missing
+  `AlbumArtist`** — easy to miss by eye at that scale, confirmed live when
+  Step 8 classified it `no_mbid_incomplete` instead of the originally
+  expected `no_mbid_varied`).
 
 **Artist variation is a false signal** for detecting hand compilations —
 compilations legitimately have many artists under one `AlbumArtist`. The real
@@ -471,9 +482,9 @@ Computed per directory, rewritten on every scan:
 | `clean` | every track has an MBID, and all are the same | 1,833 |
 | `mixed_mbid` | every track has an MBID, but >1 distinct value | 2 |
 | `partial_mbid` | some tracks have an MBID, some don't | 1 |
-| `no_mbid_consistent` | no MBIDs; one `Album`, one `AlbumArtist`, one year | 42 |
-| `no_mbid_varied` | no MBIDs; `Album` title or year varies across tracks | 5 |
-| `no_mbid_incomplete` | no MBIDs; `Album` or `AlbumArtist` absent | 3 |
+| `no_mbid_consistent` | no MBIDs; one `Album`, one `AlbumArtist`, one year | 43 |
+| `no_mbid_varied` | no MBIDs; `Album` title or year varies across tracks | 3 |
+| `no_mbid_incomplete` | no MBIDs; `Album` or `AlbumArtist` absent | 4 |
 
 **Artist variation is explicitly not a signal** (§2.5). Year comparison uses
 the first four characters of `Date`, ignoring `0000`.
