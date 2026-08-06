@@ -153,7 +153,9 @@ Recorded because they cost time and will recur:
   the outer double-quoted protocol argument. Paths like
   `A Wake-Up Call for the '90s` fail otherwise.
 - **`config` is rejected** for non-local clients, so the music directory cannot
-  be discovered over TCP — it must be configured.
+  be discovered over TCP — it must be configured. (§4.1 works around this by
+  reading `mpd.conf` directly off disk, since `album-tool` always runs on the
+  same machine as MPD.)
 
 ---
 
@@ -217,6 +219,25 @@ limiter) are recorded in `AGENTS.md`.
 `albums.db` lives **in the music folder**, so it is backed up and moved with the
 music.
 
+**The database path is not hand-configured.** `album-tool` reads MPD's own
+`mpd.conf` directly off disk — for `music_directory` and `port` — and derives
+`db_path` as `<music_directory>/albums.db`. This is a deliberate workaround for
+§2.7's finding, not a contradiction of it: the MPD *protocol* `config` command
+is rejected for non-local clients, but `album-tool` always runs on the same
+machine as MPD, so reading `mpd.conf` as a plain file sidesteps the protocol
+restriction entirely. This assumes `album-tool` and MPD always share a
+machine — true today and a reasonable constraint for a tool that needs
+filesystem access to the database anyway.
+
+`mpd.conf` defaults to `~/.mpd/mpd.conf`, overridable with `--mpd-conf <path>`.
+`--db-path <path>` bypasses derivation entirely, for pointing at a scratch or
+test database without touching `mpd.conf`. `mpd_host` is hardcoded to
+`localhost` — reading `mpd.conf` from the local filesystem already establishes
+that MPD is local, and `bind_to_address` doesn't reliably name a reachable
+address anyway. **`album-tool` therefore has no TOML config file of its own**
+— everything it needs is either derived from `mpd.conf` or passed on the
+command line.
+
 The music folder is synced to Dropbox as backup and copied to a NAS over SMB,
 but is **never** written concurrently from two machines. Multi-writer safety is
 therefore a non-goal.
@@ -233,10 +254,6 @@ PRAGMA busy_timeout = 5000;
 
 `journal_mode=DELETE` costs nothing at this scale (1,886 rows, batch writes)
 and makes every Dropbox snapshot restorable.
-
-The database path comes from the `album-tool` config (TOML, sharing
-`config.rs` conventions with the controller) with no default — it must be set
-explicitly, since MPD's `music_directory` is not discoverable over TCP (§2.7).
 
 **Timestamps** (`first_seen`, `last_seen`, `rated_at`, `mb_synced_at`,
 `mb_verified_at`) are stored as RFC 3339 text (`2026-08-05T12:34:56Z`).

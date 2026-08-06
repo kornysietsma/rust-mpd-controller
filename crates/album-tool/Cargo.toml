@@ -6,3 +6,8 @@ authors = ["Korny Sietsma <korny@sietsma.com>"]
 license = "MIT"
 
 [dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.5", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"

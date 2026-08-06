@@ -294,22 +294,74 @@ controller 57/57, album-tool 0 — still a stub).
 
 ---
 
-### Step 6 — `album-tool` skeleton
+### Step 6 — `album-tool` skeleton — DONE
 
-- [ ] `clap` 4.6.5 derive: `scan`, `sync`, `status` as stubs.
-- [ ] TOML config: database path and MPD address.
-- [ ] **The database path has no default and is required** — MPD's
-      `music_directory` is not discoverable over TCP (`config` is rejected for
-      non-local clients, spec §2.7), so it cannot be inferred.
+**Revised after Korny review:** no TOML config. `album-tool` derives
+`db_path` by reading MPD's own `mpd.conf` directly off disk (`music_directory`
++ `port`) rather than asking a config field for it. MPD's protocol `config`
+command is rejected for non-local clients (spec §2.7), but `album-tool` always
+runs on the same machine as MPD, so reading `mpd.conf` as a plain file
+sidesteps that restriction rather than working around it with a hand-set
+value. Spec §4.1 and §2.7 updated to match.
 
-**Automated:** config parsing, including a clear error when the path is absent.
+- [x] `clap` 4.6.5 derive (`crates/album-tool/src/cli.rs`): `scan`, `sync`,
+      `status` as stubs, plus two global flags: `--mpd-conf <path>` (default
+      `~/.mpd/mpd.conf`) and `--db-path <path>` (bypasses `mpd.conf`
+      derivation entirely, for a scratch/test database).
+- [x] `mpd_conf.rs`: a parser for MPD's config-file format (`key "value"` /
+      `key value` lines, `#` comments, brace-delimited blocks like
+      `audio_output { ... }`) that extracts `music_directory` (required — a
+      clear error if absent/commented-out, since it's commented out by
+      default in a fresh `mpd.conf`) and `port` (optional, defaults to 6600).
+      Brace-depth tracking (clamped at 0, so a stray unmatched `}` can't send
+      depth negative and hide real top-level directives afterwards — caught
+      by a test, not anticipated up front) means a `port` line nested inside
+      an `audio_output` block is never mistaken for the top-level one. Tilde-
+      expands `music_directory` (`~/music` is MPD's own documented default
+      value) via a pure function taking an explicit home directory, not
+      `std::env`. Split into a pure `parse(&str, home: &str) ->
+      Result<MpdConf>` and a thin `load(&Path) -> Result<MpdConf>` that reads
+      the file, mirroring `controller/src/config.rs`'s `load`/`load_from`
+      split for testability.
+- [x] `db_path` resolution (`main.rs`): `--db-path` if given, else
+      `mpd_conf::load(..).music_directory.join("albums.db")`.
+- [x] `mpd_host` is hardcoded `"localhost"`, no flag — reading `mpd.conf` from
+      the local filesystem already establishes MPD is local, and
+      `bind_to_address` doesn't reliably name a reachable address anyway. Not
+      yet used anywhere (no MPD connection until Step 7).
 
-**Manual:** `album-tool --help` and each `--help` read sensibly; running with
-no config gives an actionable message, not a panic.
+**Automated (15 tests, all passing):** `mpd_conf::parse` — top-level
+`music_directory` and `port` parsed; comments and a `port` nested in an
+`audio_output` block ignored; tilde expansion; port default when absent;
+missing `music_directory` and an invalid `port` value are both clear errors;
+a bare stray `}` doesn't hide a later top-level directive (the depth-clamp
+bug, caught by this test before it shipped); `load` on a missing file names
+`mpd.conf`/`--mpd-conf` in the error. `Cli` parsing smoke tests: `scan
+--dry-run`, `sync --limit 5 --force`, `status`, global flags before or after
+the subcommand, missing subcommand is an error.
+
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (album-tool 15/15,
+albumdb 52/52, controller 57/57).
+
+**Manual — verified against the real environment:**
+- [x] `album-tool --help` and each subcommand's `--help` read sensibly.
+- [x] Against the real `~/.mpd/mpd.conf`
+      (`music_directory "/Volumes/ssd2024/Dropbox/Dropbox/unsyncd/audio/beets"`),
+      `db_path` resolves to
+      `/Volumes/ssd2024/Dropbox/Dropbox/unsyncd/audio/beets/albums.db`.
+- [x] `--mpd-conf /nonexistent/path` exits 1 with an actionable message, not
+      a panic.
+- [x] `--db-path /tmp/scratch.db` bypasses `mpd.conf` entirely, as designed.
 
 ---
 
 ### Step 7 — MPD library reader
+
+Connects to MPD at `localhost:<port>` — `mpd_host` was hardcoded in Step 6
+(spec §4.1), and `mpd_conf::MpdConf.port` (already parsed off the real
+`mpd.conf`, currently only `music_directory` is used) is exactly the port to
+connect on. Thread it through rather than hardcoding `6600` a second time.
 
 - [ ] `LibrarySource` trait (§1.3).
 - [ ] Real implementation: `listfiles` → top-level dirs, `lsinfo` per top →
