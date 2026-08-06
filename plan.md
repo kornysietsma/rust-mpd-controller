@@ -398,99 +398,42 @@ for the port whenever a command needs to reach MPD.
 
 No reconciliation yet (Step 9). Every scan is treated as a first scan.
 
-- [x] `crates/album-tool/src/scan.rs`: `group_into_albums(Vec<SongTags>) ->
-      Result<Vec<AlbumGroup>>` groups by containing directory
-      (`path.rsplit_once('/')`) and derives one `AlbumGroup` (an `AlbumFacts`
-      plus its file-tag genre) per album — pure, no I/O, same shape as
-      `derive_tag_state`.
-- [x] Title/artist resolution per spec §5.3: `Tag` states read `Album`/
-      `AlbumArtist` (first non-empty value across the group's tracks —
-      relevant only for `mixed_mbid`/`partial_mbid`'s 3 real albums, already
-      flagged for manual Picard fixing regardless of which value wins);
-      `Path` states go through `parse_album_path`.
-- [x] Dates normalised via `normalise_date` (first non-junk value found);
-      `label` first non-empty; `track_count` = group size; `disc_count` = max
-      parsed `Disc` value, default 1; MB identifiers first non-empty.
-- [x] File-tag genre (first non-empty `Genre` across the group) written to
-      `album_genres` as `source = 'tag'`, `votes = 0` via `write_albums`,
-      which also calls `upsert_album` per group. `replace_genres` with an
-      empty list when there's no tag genre keeps a re-scan idempotent.
-- [x] `--dry-run`: `main.rs`'s `Scan` handler only opens/writes the database
-      when `!dry_run`; the report (album count + `tag_state` distribution,
-      spec §5.5) is computed from the pure grouping either way.
+- [x] `crates/album-tool/src/scan.rs` (new): `group_into_albums(Vec<SongTags>)
+      -> Result<Vec<AlbumGroup>>` groups by containing directory and derives
+      one `AlbumGroup` (an `AlbumFacts` plus its file-tag genre) per album —
+      pure, no I/O, same shape as `derive_tag_state`. `write_albums` calls
+      `upsert_album` + `replace_genres` per group. Where a group's tracks
+      disagree on a scalar field (only possible for `mixed_mbid`/
+      `partial_mbid`), the first non-empty value in path-sorted order wins —
+      those states are already flagged for manual Picard fixing regardless.
+- [x] `main.rs`'s `Scan` handler: `--dry-run` skips opening/writing the
+      database; the report (album count + `tag_state` distribution, spec
+      §5.5) is computed from the pure grouping either way.
 
-**Revised after Korny review, before running against the live library:**
-`upsert_album` (Step 5, already "DONE") unconditionally overwrote `title`/
-`artist`/`title_source` on every scan, with no guard for spec §5.3's "a row
-whose `title_source = 'manual'` is never overwritten by a scan." Fixed in
-`albumdb::queries::upsert_album` with a `CASE WHEN title_source = 'manual'
-THEN <existing> ELSE <new> END` on all three columns, plus a new test
-(`upsert_never_overwrites_a_manual_title`).
+**Revised after Korny review:** `upsert_album` (Step 5, already "DONE") had
+no guard for spec §5.3's "a row whose `title_source = 'manual'` is never
+overwritten by a scan." Fixed with a `CASE WHEN title_source = 'manual'`
+guard on `title`/`artist`/`title_source` in the `ON CONFLICT` clause.
 
-**Automated (8 new tests in `scan.rs`, all passing):** full scan of the
-fixture into an in-memory DB — `tag_state` distribution matches the fixture's
-per-album comments exactly (clean 9, mixed_mbid 1, partial_mbid 1,
-no_mbid_consistent 3, no_mbid_varied 3, no_mbid_incomplete 3); `title_source`
-is `path` for varied/incomplete and `tag` otherwise; a clean album keeps its
-tag title/artist/genre; the multi-disc album gets `disc_count = 2`; a
-path-derived album has no tag genre; `'0000'` normalises to no date rather
-than a second variation; writing the fixture persists every album and its
-tag genre; a second scan of the same fixture changes nothing.
+**Bug found and fixed against live MPD, not caught by the fixture:** every
+real scan was landing all 1,886 albums as `no_mbid_incomplete` with every tag
+field `None`. Root cause and fix are in `AGENTS.md` (`mpd_wire` /
+`Last-Modified` gotcha) — worth reading before touching `mpd_wire.rs` again.
 
-**Bug found and fixed against live MPD, not caught by the fixture:**
-`mpd_wire::parse_directory_listing` treated `"playlist" | "Last-Modified"` as
-one match arm, both ending the current song. MPD sends `Last-Modified` as the
-very next field after every `file:` line, so this silently finalised each
-song immediately after `path` was set and before any tag field arrived —
-every real scan produced 1,886 albums, all `no_mbid_incomplete`, with every
-other column `None`. The committed fixture never exercised this because it
-has no `Last-Modified` lines at all — a real gap in Step 7's coverage. Fixed
-by dropping `Last-Modified` from that match arm; it now falls through to the
-default case and is ignored via `apply_tag`'s catch-all, same as `Added`/
-`Format`/`Time`/the `*Sort` fields. Added a regression test
-(`last_modified_does_not_terminate_the_current_song`) reproducing the real
-field order (`file`, `Last-Modified`, `Added`, `Format`, then tags).
+**Numbers vs. spec §5.4:** live counts are `clean` 1833 / `mixed_mbid` 2 /
+`partial_mbid` 1 (exact match) and `no_mbid_consistent` 43 / `no_mbid_varied`
+3 / `no_mbid_incomplete` 4 (spec originally said 42/5/3). Investigated live,
+confirmed not a bug, and spec §2.5/§5.4 updated to match — see spec.md for
+the explanation (a Mozart album's junk-year normalisation, and one blank
+`AlbumArtist` among 300 tracks in a Christmas compilation).
 
-**Manual against live MPD** (`album-tool scan --dry-run`, confirmed by Korny
-the library had not changed since Step 7's measurement):
-
-```
-scan (dry run, nothing written): 1886 albums
-  clean                1833
-  mixed_mbid              2
-  partial_mbid            1
-  no_mbid_consistent     43
-  no_mbid_varied          3
-  no_mbid_incomplete      4
-```
-
-- [x] `clean`/`mixed_mbid`/`partial_mbid` match spec §5.4 exactly.
-      `no_mbid_consistent`/`no_mbid_varied`/`no_mbid_incomplete` came out
-      43/3/4 rather than the documented 42/5/3 — investigated with a real
-      (non-dry-run) scan into a scratch `--db-path` (not the production
-      `albums.db`) and raw MPD queries per spec's own AGENTS.md-style
-      "check live data" discipline, rather than assumed to be a bug:
-    - `Eine Kleine Nachtmusik_Symphonie #29` (Mozart): one `Album`, one
-      `AlbumArtist`, `Date` either `1787` or the junk `'0000'` — one real
-      year once normalised, so `no_mbid_consistent` is correct per spec
-      §5.4's own rule. The original §2.5 measurement predates that rule and
-      counted the raw `1787`/`'0000'` mix as two years.
-    - `Christmas Music Compilation`: confirmed live that exactly 1 of its
-      300 tracks is missing `AlbumArtist` — easy to miss by eye at that
-      scale. `no_mbid_incomplete` is correct; §2.5's manual sample missed it.
-    - Spec §2.5 and §5.4's table updated to 43/3/4 to match, with the
-      Mozart/Christmas explanation recorded there.
-- [x] Named cases confirmed live: `Songs for Becky`, `Solid Gold T. Rex [Disc
-      1]` and `Hectic City` are `no_mbid_varied`; `Unnmatched/Madness` is
-      `no_mbid_incomplete`.
-- [x] A second scan changes nothing — proven at the fixture/unit level
-      (`a_second_scan_of_the_same_fixture_changes_nothing`); full
-      added/updated/missing reconciliation against a real prior scan is
-      Step 9.
-
-Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
---all-targets -- -D warnings`, `cargo test --workspace` (album-tool 36/36,
-albumdb 53/53, controller 57/57).
+**Automated:** 8 new tests in `scan.rs` (fixture `tag_state` distribution,
+title_source per state, tag-genre handling, multi-disc `disc_count`, date
+normalisation, idempotent re-scan) plus a `mpd_wire.rs` regression test for
+the `Last-Modified` bug and an `upsert_album` test for the manual-title
+guard. `cargo test --workspace`: album-tool 36/36, albumdb 53/53, controller
+57/57. `cargo fmt --all` / `cargo clippy --workspace --all-targets -- -D
+warnings` clean.
 
 ---
 

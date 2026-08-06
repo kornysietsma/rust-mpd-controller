@@ -114,6 +114,16 @@ Known gotchas already found this way, so you don't have to re-derive them:
   `Command` (see above) has to parse `Frame`'s `(key, value)` pairs itself;
   `mpd_wire::parse_directory_listing` is that parser for this project, shared
   by the real MPD commands and the fixture loader alike.
+- **`find`/`lsinfo` send `Last-Modified` as the field immediately after every
+  `file:` line, before any tag.** A hand-rolled parser that treats
+  `Last-Modified` as a record boundary (as `parse_directory_listing` once
+  did, lumped in with `playlist`) will finalise the song right there and
+  silently drop every tag that follows — confirmed live: every real scan
+  produced 1,886 albums with `path` set and every other field `None`, not
+  caught by the committed fixture because it has no `Last-Modified` lines at
+  all. `Last-Modified` (like `Added`/`Format`/`Time`/the `*Sort` fields) must
+  fall through to `apply_tag`'s catch-all and be ignored, not treated as a
+  boundary — only `file`/`directory`/`playlist` actually start a new record.
 
 ## Load-bearing oddities — don't "clean these up"
 
