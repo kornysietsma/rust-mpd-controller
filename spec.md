@@ -197,6 +197,8 @@ Current stable as of 2026-08-04:
 - `clap` 4.6.5 (with `derive`)
 - `musicbrainz_rs` 0.13.0, **with the `async` feature enabled** (off by
   default)
+- `time` 0.3.55 (with `formatting`, `macros`, `parsing` features) — backs the
+  injected `Clock` (§4.1) that every timestamp write goes through
 
 **Confirmed by spike (2026-08-05):** `musicbrainz_rs` fetches release-group
 genres with vote counts — `ReleaseGroup::fetch().with_genres()` populates
@@ -235,6 +237,12 @@ and makes every Dropbox snapshot restorable.
 The database path comes from the `album-tool` config (TOML, sharing
 `config.rs` conventions with the controller) with no default — it must be set
 explicitly, since MPD's `music_directory` is not discoverable over TCP (§2.7).
+
+**Timestamps** (`first_seen`, `last_seen`, `rated_at`, `mb_synced_at`,
+`mb_verified_at`) are stored as RFC 3339 text (`2026-08-05T12:34:56Z`).
+Every write goes through an injected `Clock`, never a bare `now()` call, so
+that code paths involving time — rate limiting during `sync` chief among
+them — stay deterministic under test.
 
 ### 4.2 Schema
 
@@ -343,6 +351,9 @@ it stale, and a stale marker is worse than none.
   years ago, no longer trust it" — which a sentinel value in `rating` cannot.
 - **Every user-editable column survives every automated pass.** This is the
   single most important invariant in the schema.
+- **Clearing a rating leaves `rated_at` untouched.** `rated_at` records when
+  the album was last rated, not whether it currently holds a rating — setting
+  `rating = NULL` doesn't erase that history.
 
 ---
 
@@ -372,7 +383,9 @@ Reads MPD, writes `albums`. Idempotent. No network beyond MPD.
 - Path in DB only → `status = 'missing'`.
 
 Disappearances are **never deleted** — deleting would silently discard a
-rating. `status` reports them.
+rating. `status` reports them. Marking a row missing does **not** update
+`last_seen`: that column records when the album was last seen *present*, and
+a directory disappearing is the opposite of that.
 
 **There is no automatic rename detection.** A moved or renamed directory
 therefore shows up as one new (unrated) row and one `missing` row that still

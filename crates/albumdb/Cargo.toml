@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.104"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+time = { version = "0.3.55", features = ["formatting", "macros", "parsing"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

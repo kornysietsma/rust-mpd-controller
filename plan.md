@@ -232,28 +232,65 @@ controller 57/57, album-tool 0 — still a stub).
 
 ---
 
-### Step 5 — `albumdb`: queries
+### Step 5 — `albumdb`: queries — DONE
 
-- [ ] `upsert_album` — writes derived fields, **never touches user-editable
+- [x] `upsert_album` — writes derived fields, **never touches user-editable
       columns**. Called for a path whether it's brand new or reappearing
-      after `missing` — either way it sets `status = 'present'`.
-- [ ] `find_by_path`, `all_present`.
-- [ ] `mark_missing(album_id)`.
-- [ ] `replace_genres(album_id, source, genres)` — replaces one source, leaves
-      the other alone.
-- [ ] User-field setters: rating, flags, `original_tracks`, `match_policy`.
+      after `missing` — either way it sets `status = 'present'`. Implemented
+      as a single `INSERT ... ON CONFLICT(path) DO UPDATE` statement whose
+      column list and `SET` clause both simply omit every user-editable
+      column — the invariant is structural, not a matter of remembering to
+      preserve fields.
+- [x] `find_by_path`, `all_present`.
+- [x] `mark_missing(album_id)` — deliberately does **not** touch `last_seen`
+      (that column means "last seen present"; going missing is the opposite
+      of that).
+- [x] `replace_genres(album_id, source, genres)` — replaces one source, leaves
+      the other alone. Runs as a transaction (delete-then-insert).
+- [x] User-field setters: `set_rating`, `set_needs_relisten`,
+      `set_is_classical`, `set_is_spoken`, `set_is_soundtrack`,
+      `set_original_tracks` (always stamps `original_tracks_src = 'manual'`
+      — `sync`'s narrower MB-derived write path is its own concern, Step 13),
+      `set_match_policy`.
 
-**Automated** (acceptance-style against in-memory SQLite, per the standards'
-preference for module-level tests):
-- [ ] **The load-bearing invariant:** set every user-editable column, run
+**New files:** `crates/albumdb/src/{album,clock,queries}.rs`, all re-exported
+from `lib.rs`.
+
+**New supporting pieces, introduced here as this is the first place time and
+full rows enter the picture:**
+- `Clock` trait + `SystemClock` + `FixedClock` (plan §1.3) in `clock.rs`,
+  backed by the `time` crate (`OffsetDateTime`, RFC 3339 storage format —
+  now also spec §4.1). `FixedClock` is public (not `cfg(test)`) since
+  `album-tool`'s own tests will need it too in later steps (e.g. Step 12's
+  rate-limiting tests).
+- `Album` (full row) and `AlbumFacts` (derived-only subset written by
+  `upsert_album`) domain structs in `album.rs`. **`AlbumFacts` is the type
+  Step 8's `scan` needs to produce** from `Vec<SongTags>` via
+  `derive_tag_state`/`parse_album_path`/`normalise_date` before calling
+  `upsert_album`.
+- Two more schema-backed string enums, following the existing
+  `enums.rs`/`string_enum!` pattern: `AlbumStatus` (`present`/`missing`) and
+  `GenreSource` (`tag`/`mb`).
+
+**Automated (12 new tests, all passing):**
+- [x] **The load-bearing invariant:** set every user-editable column, run
       `upsert_album` with completely different derived data, assert all of
-      `rating`, `needs_relisten`, `is_*`, `original_tracks`, `match_policy`,
-      `notes` are unchanged. This is the one test that must never be deleted.
-- [ ] `replace_genres(.., 'mb', ..)` leaves `source = 'tag'` rows intact, and
-      vice versa.
-- [ ] Re-running `replace_genres` with the same source doesn't duplicate rows.
-- [ ] An album marked `missing` then re-`upsert_album`'d at the same path
-      goes back to `status = 'present'` with its user fields untouched.
+      `rating`, `needs_relisten`, `is_*`, `original_tracks`,
+      `original_tracks_src`, `match_policy`, `notes` are unchanged, while
+      confirming the derived fields (`title`, `tag_state`, `last_seen`) *did*
+      change — proving the invariant isn't vacuously true.
+- [x] `replace_genres(.., 'mb', ..)` leaves `source = 'tag'` rows intact, and
+      vice versa; re-running with a different set replaces rather than
+      duplicates.
+- [x] An album marked `missing` then re-`upsert_album`'d at the same path
+      goes back to `status = 'present'` with its rating untouched.
+- [x] `find_by_path` on an unknown path, `all_present` excluding `missing`
+      rows, `set_rating(None, ..)` clearing `rating` but preserving the last
+      `rated_at`, `set_original_tracks` stamping `manual`.
+
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (albumdb 52/52,
+controller 57/57, album-tool 0 — still a stub).
 
 ---
 

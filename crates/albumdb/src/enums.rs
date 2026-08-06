@@ -36,6 +36,16 @@ macro_rules! string_enum {
     };
 }
 
+string_enum!(AlbumStatus {
+    Present => "present",
+    Missing => "missing",
+});
+
+string_enum!(GenreSource {
+    Tag => "tag",
+    Mb => "mb",
+});
+
 string_enum!(TagState {
     Clean => "clean",
     MixedMbid => "mixed_mbid",
@@ -74,6 +84,20 @@ string_enum!(VerifyState {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn album_status_round_trips_every_variant() {
+        for s in ["present", "missing"] {
+            assert_eq!(AlbumStatus::from_str(s).unwrap().as_str(), s);
+        }
+    }
+
+    #[test]
+    fn genre_source_round_trips_every_variant() {
+        for s in ["tag", "mb"] {
+            assert_eq!(GenreSource::from_str(s).unwrap().as_str(), s);
+        }
+    }
 
     #[test]
     fn tag_state_round_trips_every_variant() {
