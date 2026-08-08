@@ -34,10 +34,13 @@ for the port, because it still has to talk to MPD. That's deliberate —
 The menu-bar app derives the same two values the same way, so the two agree by
 construction rather than by both being configured correctly. It has the
 equivalent overrides in `~/.config/mpd-controller/config.toml` (`mpd_conf`,
-`db_path`) since a GUI app takes no command line — see the README. Unlike
-`album-tool` it treats an unreadable `mpd.conf` as a warning and starts anyway;
-a missing `music_directory` only costs it the database path, which it doesn't
-consume yet.
+`db_path`) since a GUI app takes no command line — see the README. Like
+`album-tool`, an unreadable `mpd.conf` or an unresolvable/missing `albums.db`
+is fatal — the difference is only in how each reports it: `album-tool` exits
+with an error on the CLI, the menu-bar app has no terminal to print to, so it
+puts the same failure up as a `⚠️` tray icon instead
+(`crates/controller/src/config.rs`'s `ConfigError`, see the README). It
+validates that `albums.db` exists at startup even though nothing reads it yet.
 
 ### `journal_mode = DELETE` is load-bearing
 

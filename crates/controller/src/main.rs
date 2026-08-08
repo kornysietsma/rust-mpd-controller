@@ -15,7 +15,7 @@ use std::future::Future;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use mpd_client::client::Client;
 use mpd_client::commands::SongId;
 use mpd_client::responses::{PlayState, SongInQueue};
@@ -119,11 +119,49 @@ fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
         .collect()
 }
 
+/// Startup failed before there was a trustworthy `Config` to run on — put up
+/// an error icon and a menu with nothing but the failure and Quit, and skip
+/// MPD entirely, since connecting needs the same config that just failed.
+fn run_error_mode(err: config::ConfigError) -> Result<()> {
+    error!("startup failed: {err:#}");
+
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(UserEvent::MenuEvent(event));
+    }));
+
+    let message = err.to_string();
+    let log_path = log_file_path().ok();
+    let tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(menu::render_error(&message, log_path.as_deref())?))
+        .with_title(menu::error_title())
+        .with_tooltip(format!("MpdController: {message}"))
+        .build()?;
+
+    event_loop.run(move |event, _window_target, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if let Event::UserEvent(UserEvent::MenuEvent(menu_event)) = event
+            && menu_event.id == menu::QUIT_ID
+        {
+            info!("Quit selected, exiting");
+            *control_flow = ControlFlow::Exit;
+        }
+        let _ = &tray_icon;
+    });
+}
+
 fn main() -> Result<()> {
     init_logging()?;
     info!("MpdController starting");
 
-    let config = config::load()?;
+    let config = match config::load() {
+        Ok(config) => config,
+        Err(err) => return run_error_mode(err),
+    };
     debug!("Loaded config: {config:?}");
     // Captured before `config` moves into `mpd::run` below — the event loop
     // closure needs it on every menu rebuild.

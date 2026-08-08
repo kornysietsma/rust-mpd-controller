@@ -129,12 +129,19 @@ The rest exist only to override that inference:
 | `mpd_conf` | `~/.mpd/mpd.conf` — where to look for MPD's config |
 | `db_path` | `<music_directory>/albums.db`, from `mpd.conf`. The counterpart to `album-tool --db-path`; a GUI app takes no command line, so this file is the only place an override can live |
 
-If `mpd.conf` is missing or unreadable the app still starts, logs a warning,
-and falls back to `localhost:6600`. If `config.toml` itself exists but fails to
-parse — including an unrecognised key, which is usually a typo — the app fails
-to start rather than silently ignoring it. A `key_playlists` entry naming a
-playlist that doesn't exist in MPD is logged at `warn` and omitted from the
-menu.
+Every startup problem below shows up the same way: a `⚠️` tray icon whose
+dropdown gives a one-line description of the failure and the log file's path,
+with nothing else in the menu but Quit — the app never attempts to connect to
+MPD in this state, since it needs the same config that just failed. Covers a
+missing/unreadable `mpd.conf`, `config.toml` failing to parse (including an
+unrecognised key, which is usually a typo), the album database's location
+being unknown (no `music_directory` in `mpd.conf` and no `db_path` override),
+its directory being inaccessible, or `albums.db` itself not existing there —
+not read by the app yet, but checked at startup anyway since a broken path is
+far easier to diagnose here than the first time something tries to open it.
+
+A `key_playlists` entry naming a playlist that doesn't exist in MPD is a
+smaller, non-fatal problem: logged at `warn` and just omitted from the menu.
 
 ## Using it
 

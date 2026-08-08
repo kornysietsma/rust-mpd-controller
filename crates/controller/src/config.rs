@@ -1,8 +1,9 @@
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use log::{debug, warn};
+use log::debug;
 use mpd_conf::MpdConf;
 use serde::Deserialize;
 
@@ -33,9 +34,13 @@ struct FileConfig {
 pub struct Config {
     pub mpd_host: String,
     pub mpd_port: u16,
-    /// `None` when neither the config file nor `mpd.conf` could supply one.
-    /// Not yet read by anything — the menu-bar app doesn't consume the album
-    /// database yet (see `docs/future_expansions.md`).
+    /// `None` when neither the config file nor `mpd.conf` could supply one —
+    /// `resolve`'s own possibility, though `load` never returns a `Config`
+    /// with this unset: `validate_db_path` turns that case into a
+    /// `ConfigError` first. Not yet read by anything — the menu-bar app
+    /// doesn't consume the album database yet (see
+    /// `docs/future_expansions.md`) — but its *presence* is checked at
+    /// startup regardless.
     pub db_path: Option<PathBuf>,
     pub key_playlists: Vec<String>,
 }
@@ -51,36 +56,106 @@ impl Default for Config {
     }
 }
 
+/// Everything that can stop the app from reaching a usable `Config`. Each
+/// variant carries what a person needs to fix it — the tray's error menu
+/// shows `Display`, the log gets the same via `{:#}` on the wrapped error.
+/// A GUI app can't just crash on any of these the way `album-tool` (a CLI)
+/// does: there's no terminal to see the message on, so the tray has to
+/// become the error message instead.
+#[derive(Debug)]
+pub enum ConfigError {
+    /// `HOME` unset, or `config.toml` exists but is unreadable or malformed
+    /// (including an unrecognised key).
+    ConfigFile(anyhow::Error),
+    /// `mpd.conf` — the default location or a `mpd_conf` override — is
+    /// missing or unreadable.
+    MpdConf {
+        path: PathBuf,
+        source: anyhow::Error,
+    },
+    /// Neither `db_path` nor `mpd.conf`'s `music_directory` was set, so
+    /// there's nowhere to even look for `albums.db`.
+    DbLocationUnknown,
+    /// `albums.db`'s parent directory doesn't exist or can't be read.
+    DbDirNotAccessible { dir: PathBuf, source: anyhow::Error },
+    /// The directory is fine, but `albums.db` itself isn't there yet — not
+    /// read by the menu-bar app today, but it will be soon, so a missing
+    /// database is caught here rather than surfacing as a mystery later.
+    DbFileMissing { path: PathBuf },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::ConfigFile(e) => write!(f, "config.toml error: {e:#}"),
+            ConfigError::MpdConf { path, source } => {
+                write!(f, "could not read {} ({source:#})", path.display())
+            }
+            ConfigError::DbLocationUnknown => write!(
+                f,
+                "album database location unknown — no music_directory in mpd.conf, \
+                 and no db_path in config.toml"
+            ),
+            ConfigError::DbDirNotAccessible { dir, source } => {
+                write!(
+                    f,
+                    "album database directory not accessible: {} ({source:#})",
+                    dir.display()
+                )
+            }
+            ConfigError::DbFileMissing { path } => {
+                write!(f, "album database not found: {}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 fn config_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable not set")?;
     Ok(PathBuf::from(home).join(".config/mpd-controller/config.toml"))
 }
 
-pub fn load() -> Result<Config> {
-    let file = load_file(&config_path()?)?;
+pub fn load() -> Result<Config, ConfigError> {
+    let path = config_path().map_err(ConfigError::ConfigFile)?;
+    let file = load_file(&path).map_err(ConfigError::ConfigFile)?;
 
-    // A missing or unreadable mpd.conf must never stop the app starting —
-    // unlike `album-tool`, which is a CLI and can just fail. Fall back to the
-    // built-in defaults and say so in the log.
     let mpd_conf_path = match &file.mpd_conf {
         Some(path) => path.clone(),
-        None => mpd_conf::default_path()?,
+        None => mpd_conf::default_path().map_err(ConfigError::ConfigFile)?,
     };
-    let conf = match mpd_conf::load(&mpd_conf_path) {
-        Ok(conf) => {
-            debug!("read MPD settings from {}", mpd_conf_path.display());
-            Some(conf)
-        }
-        Err(e) => {
-            warn!(
-                "could not read {} ({e:#}); falling back to {DEFAULT_MPD_HOST}:{DEFAULT_MPD_PORT}",
-                mpd_conf_path.display()
-            );
-            None
-        }
-    };
+    let conf = mpd_conf::load(&mpd_conf_path).map_err(|source| ConfigError::MpdConf {
+        path: mpd_conf_path.clone(),
+        source,
+    })?;
+    debug!("read MPD settings from {}", mpd_conf_path.display());
 
-    Ok(resolve(file, conf.as_ref()))
+    let config = resolve(file, Some(&conf));
+    validate_db_path(&config)?;
+    Ok(config)
+}
+
+/// Confirms `albums.db` is actually reachable, not just that some path was
+/// computed for it. Not read by the menu-bar app yet (see
+/// `docs/future_expansions.md`), but that's coming soon, and a broken path
+/// is far easier to diagnose at startup than the first time something tries
+/// to open it.
+fn validate_db_path(config: &Config) -> Result<(), ConfigError> {
+    let Some(db_path) = &config.db_path else {
+        return Err(ConfigError::DbLocationUnknown);
+    };
+    let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::metadata(dir).map_err(|source| ConfigError::DbDirNotAccessible {
+        dir: dir.to_path_buf(),
+        source: source.into(),
+    })?;
+    if !db_path.is_file() {
+        return Err(ConfigError::DbFileMissing {
+            path: db_path.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Config file wins over `mpd.conf`, which wins over the built-in defaults.
@@ -229,7 +304,9 @@ mod tests {
         assert_eq!(config.db_path, Some(PathBuf::from("/elsewhere/albums.db")));
     }
 
-    /// An unreadable mpd.conf must not stop the app starting.
+    /// `resolve` itself has a defined fallback for "no mpd.conf" — `load`
+    /// (untested here; needs real files) is what turns that case into a
+    /// `ConfigError::MpdConf` instead of using it.
     #[test]
     fn falls_back_to_defaults_without_mpd_conf() {
         assert_eq!(resolve(FileConfig::default(), None), Config::default());
@@ -263,5 +340,68 @@ mod tests {
             let config = resolve(file.clone(), conf);
             assert_eq!(config.key_playlists, vec!["Five stars".to_string()]);
         }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mpd-controller-test-{}-{name}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config_with_db_path(db_path: Option<PathBuf>) -> Config {
+        Config {
+            db_path,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn validate_db_path_errors_when_location_unknown() {
+        assert!(matches!(
+            validate_db_path(&config_with_db_path(None)),
+            Err(ConfigError::DbLocationUnknown)
+        ));
+    }
+
+    #[test]
+    fn validate_db_path_errors_when_directory_missing() {
+        let dir = temp_dir("dir-missing");
+        fs::remove_dir(&dir).unwrap();
+        let db_path = dir.join("albums.db");
+
+        assert!(matches!(
+            validate_db_path(&config_with_db_path(Some(db_path))),
+            Err(ConfigError::DbDirNotAccessible { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_db_path_errors_when_file_missing() {
+        let dir = temp_dir("file-missing");
+        let db_path = dir.join("albums.db");
+
+        let result = validate_db_path(&config_with_db_path(Some(db_path.clone())));
+        fs::remove_dir_all(&dir).ok();
+
+        assert!(matches!(result, Err(ConfigError::DbFileMissing { path }) if path == db_path));
+    }
+
+    #[test]
+    fn validate_db_path_succeeds_when_file_exists() {
+        let dir = temp_dir("file-present");
+        let db_path = dir.join("albums.db");
+        fs::File::create(&db_path).unwrap();
+
+        let result = validate_db_path(&config_with_db_path(Some(db_path)));
+        fs::remove_dir_all(&dir).ok();
+
+        assert!(result.is_ok());
     }
 }

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 use mpd_client::responses::PlayState;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -125,6 +127,8 @@ fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
 
 const EMPTY_QUEUE_ICON: &str = "♫";
 const DISCONNECTED_ICON: &str = "🔇";
+// Pinned to text presentation for the same reason as `PAUSED_ICON` below.
+const ERROR_ICON: &str = "\u{26A0}\u{FE0E}";
 // Pinned to text presentation with U+FE0E, as the menu glyphs below
 // are, so it renders monochrome and narrow rather than as wide colour emoji.
 const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
@@ -170,6 +174,10 @@ pub fn empty_queue_title() -> String {
 
 pub fn disconnected_title() -> String {
     DISCONNECTED_ICON.to_string()
+}
+
+pub fn error_title() -> String {
+    ERROR_ICON.to_string()
 }
 
 pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
@@ -514,6 +522,29 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
 
     // Block 1 (Play/Pause/Next/Clear) is always present, so this separator
     // and Quit are always appended — never leaving two separators adjacent.
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
+
+    Ok(menu)
+}
+
+/// The startup-error menu: just what broke and where to look, plus Quit.
+/// Used in place of `render` when `config::load` fails — nothing else in the
+/// app (MPD connection included) is even attempted in that case, so there is
+/// nothing else to show. The description rows are disabled `MenuItem`s
+/// (`false` for `enabled`), the same convention `render` uses for the
+/// informational "In playlists" rows.
+pub fn render_error(message: &str, log_path: Option<&Path>) -> Result<Menu> {
+    let menu = Menu::new();
+
+    menu.append(&MenuItem::new(message, false, None))?;
+    if let Some(log_path) = log_path {
+        menu.append(&MenuItem::new(
+            format!("Log: {}", log_path.display()),
+            false,
+            None,
+        ))?;
+    }
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
 
