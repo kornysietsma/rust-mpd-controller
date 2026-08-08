@@ -1,7 +1,9 @@
 # Album Database — Technical Specification
 
-**Status:** ready for implementation
-**Date:** 2026-08-04
+**Status:** implemented and verified against the live library; wrap-up
+(menu-bar re-verify, delete the one-off ratings script, final commit) tracked
+in `plan.md`
+**Date:** 2026-08-04 (last design update 2026-08-07)
 **Supersedes:** `album-data/albums_and_musicbrainz_prompt.md` (the original brief)
 
 ---
@@ -228,6 +230,12 @@ against the real API and got exactly the numbers in §2.2. `.with_releases()`
 also works, covering §7.3's `mb_original_count`. No `reqwest` fallback is
 needed. Usage gotchas (feature flag, client construction, built-in rate
 limiter) are recorded in `AGENTS.md`.
+
+**Corrected during implementation (2026-08-07):** `.with_releases()` alone
+does not carry per-release track counts — confirmed live via `curl` that
+`inc=releases` returns no `media` field at all. `.with_medias()` (`inc=media`)
+must be requested alongside it on the same release-group fetch; §7.1 and
+§7.3 below reflect this.
 
 ---
 
@@ -573,9 +581,10 @@ MusicBrainz policy compliance is non-negotiable:
   `album-tool/0.1.0 (korny@sietsma.com)`.
 - No authentication is needed.
 
-Endpoint: `/ws/2/release-group/<mbid>?inc=genres&fmt=json`
+Endpoint: `/ws/2/release-group/<mbid>?inc=genres+releases+media&fmt=json`
 
-`inc=genres`, **not** `inc=tags` (§2.2).
+`inc=genres`, **not** `inc=tags` (§2.2). `releases+media` is needed to derive
+`mb_original_count` (§7.3) — `releases` alone carries no track-count data.
 
 **Deduplicate by `mb_release_group_id` before requesting** — 1,830 distinct
 groups across 1,886 albums, and multiple albums can share one group. Fetch each
@@ -602,11 +611,14 @@ Transient failures are real — one `503` in four sample requests (§2.3).
 - `primary_genre` — the highest-voted MB genre, cached for cheap queries.
 - `mb_original_count` — the track count of the earliest release in the release
   group, which gives a real original-track count. The *tagged* release includes
-  bonus tracks and cannot supply this. Requires
-  `inc=releases` on the release-group request. Where this is confidently
-  derivable and `original_tracks` is unset, `album-tool` may set
-  `original_tracks = '1-<n>'` with `original_tracks_src = 'mb'`; a `manual`
-  value is never overwritten.
+  bonus tracks and cannot supply this. Requires `inc=releases+media` on the
+  release-group request (`releases` alone carries no track-count data — see
+  §3.3). The earliest release is picked by comparing each release's raw date
+  string; releases missing a date or media are excluded. Where this is
+  confidently derivable and `original_tracks` is unset, `album-tool` sets
+  `original_tracks = '1-<n>'` with `original_tracks_src = 'mb'`; an
+  already-set value (`manual`, or a prior sync's own `mb` value) is never
+  overwritten.
 - `mb_sync_state = 'ok'`, `mb_synced_at = now`.
 
 Boolean category flags are **not** written by `sync` in v1. Deriving
