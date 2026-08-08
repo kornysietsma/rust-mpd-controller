@@ -1,18 +1,18 @@
 [package]
 name = "album-tool"
-version = "0.1.0"
-edition = "2024"
-authors = ["Korny Sietsma <korny@sietsma.com>"]
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 albumdb = { path = "../albumdb" }
-anyhow = "1.0.104"
-clap = { version = "4.6.5", features = ["derive"] }
-mpd_client = "1.4.1"
+anyhow.workspace = true
+clap = { version = "4.6.6", features = ["derive"] }
+mpd_client.workspace = true
 musicbrainz_rs = { version = "0.13.0", features = ["async"] }
-time = { version = "0.3.55", features = ["macros"] }
-tokio = { version = "1.53.1", features = ["rt", "net", "time"] }
+time = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
 
 [dev-dependencies]
-pretty_assertions = "1.4.1"
+pretty_assertions.workspace = true

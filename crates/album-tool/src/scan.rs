@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use albumdb::{
-    AlbumFacts, Clock, Connection, GenreEntry, GenreSource, SongTags, TagState, TitleSource,
-    all_present, derive_tag_state, find_by_path, mark_missing, normalise_date, parse_album_path,
-    replace_genres, upsert_album,
+    AlbumFacts, AlbumStatus, Clock, Connection, GenreEntry, GenreSource, SongTags, TagState,
+    TitleSource, all_albums, derive_tag_state, find_by_path, mark_missing, normalise_date,
+    parse_album_path, present_tag as present, replace_genres, upsert_album,
 };
 use anyhow::{Context, Result};
 
@@ -41,10 +41,6 @@ fn containing_directory(path: &str) -> String {
     path.rsplit_once('/')
         .map(|(dir, _)| dir.to_string())
         .unwrap_or_default()
-}
-
-fn present(value: &Option<String>) -> Option<&str> {
-    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// Builds the facts for one album directory. Where tracks disagree on a
@@ -177,29 +173,28 @@ impl fmt::Display for ScanReport {
 /// what to mark missing) and `scan --dry-run` (which reports without
 /// touching the database).
 pub fn compute_report(conn: &Connection, groups: &[AlbumGroup]) -> Result<ScanReport> {
-    let existing_present: HashSet<String> = all_present(conn)
-        .context("failed to read existing present albums")?
-        .into_iter()
-        .map(|a| a.path)
+    // One read covers both questions. `updated` needs "has a row at all"
+    // (a `missing` row seen again is an update, not an addition), while
+    // `newly_missing` needs "was present" — so a per-group `find_by_path`
+    // would be ~1,900 extra queries for data already in hand.
+    let existing = all_albums(conn).context("failed to read existing albums")?;
+    let known: HashSet<&str> = existing.iter().map(|a| a.path.as_str()).collect();
+    let present: HashSet<&str> = existing
+        .iter()
+        .filter(|a| a.status == AlbumStatus::Present)
+        .map(|a| a.path.as_str())
         .collect();
 
-    let mut added = Vec::new();
-    let mut updated = Vec::new();
-    for group in groups {
-        let existed = find_by_path(conn, &group.facts.path)
-            .with_context(|| format!("failed to look up album {:?}", group.facts.path))?
-            .is_some();
-        if existed {
-            updated.push(group.facts.path.clone());
-        } else {
-            added.push(group.facts.path.clone());
-        }
-    }
+    let (updated, added): (Vec<String>, Vec<String>) = groups
+        .iter()
+        .map(|g| g.facts.path.clone())
+        .partition(|path| known.contains(path.as_str()));
 
     let scanned_paths: HashSet<&str> = groups.iter().map(|g| g.facts.path.as_str()).collect();
-    let mut newly_missing: Vec<String> = existing_present
+    let mut newly_missing: Vec<String> = present
         .into_iter()
-        .filter(|path| !scanned_paths.contains(path.as_str()))
+        .filter(|path| !scanned_paths.contains(path))
+        .map(str::to_string)
         .collect();
     newly_missing.sort();
 

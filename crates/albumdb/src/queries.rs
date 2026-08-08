@@ -5,7 +5,6 @@ use time::OffsetDateTime;
 use crate::album::{Album, AlbumFacts};
 use crate::clock::format_timestamp;
 use crate::enums::{GenreSource, MatchPolicy};
-use crate::track_range::TrackRange;
 
 /// Insert a new album row, or update an existing one at the same `path`.
 ///
@@ -258,50 +257,6 @@ pub fn set_needs_relisten(conn: &Connection, album_id: i64, value: bool) -> Resu
     Ok(())
 }
 
-pub fn set_is_classical(conn: &Connection, album_id: i64, value: bool) -> Result<()> {
-    conn.execute(
-        "UPDATE albums SET is_classical = ?1 WHERE album_id = ?2",
-        params![value, album_id],
-    )
-    .with_context(|| format!("failed to set is_classical for album {album_id}"))?;
-    Ok(())
-}
-
-pub fn set_is_spoken(conn: &Connection, album_id: i64, value: bool) -> Result<()> {
-    conn.execute(
-        "UPDATE albums SET is_spoken = ?1 WHERE album_id = ?2",
-        params![value, album_id],
-    )
-    .with_context(|| format!("failed to set is_spoken for album {album_id}"))?;
-    Ok(())
-}
-
-pub fn set_is_soundtrack(conn: &Connection, album_id: i64, value: bool) -> Result<()> {
-    conn.execute(
-        "UPDATE albums SET is_soundtrack = ?1 WHERE album_id = ?2",
-        params![value, album_id],
-    )
-    .with_context(|| format!("failed to set is_soundtrack for album {album_id}"))?;
-    Ok(())
-}
-
-/// Set `original_tracks` by hand. Always stamps `original_tracks_src =
-/// 'manual'` — the one exception, `sync` filling in an MB-derived range when
-/// the column is still unset, is [`set_sync_ok`]'s own narrow write path,
-/// not this general setter.
-pub fn set_original_tracks(
-    conn: &Connection,
-    album_id: i64,
-    range: Option<&TrackRange>,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE albums SET original_tracks = ?1, original_tracks_src = 'manual' WHERE album_id = ?2",
-        params![range.map(|r| r.to_string()), album_id],
-    )
-    .with_context(|| format!("failed to set original_tracks for album {album_id}"))?;
-    Ok(())
-}
-
 pub fn set_match_policy(conn: &Connection, album_id: i64, policy: MatchPolicy) -> Result<()> {
     conn.execute(
         "UPDATE albums SET match_policy = ?1 WHERE album_id = ?2",
@@ -410,13 +365,18 @@ mod tests {
 
         set_rating(&conn, album_id, Some(5), t1).unwrap();
         set_needs_relisten(&conn, album_id, true).unwrap();
-        set_is_classical(&conn, album_id, true).unwrap();
-        set_is_spoken(&conn, album_id, true).unwrap();
-        set_is_soundtrack(&conn, album_id, true).unwrap();
-        set_original_tracks(&conn, album_id, Some(&"1-8".parse().unwrap())).unwrap();
         set_match_policy(&conn, album_id, MatchPolicy::Never).unwrap();
+        // The rest have no setter yet — they're written by hand in SQL until
+        // something needs them, which is exactly the case this guards.
         conn.execute(
-            "UPDATE albums SET notes = 'hand-written note' WHERE album_id = ?1",
+            "UPDATE albums SET
+                is_classical        = 1,
+                is_spoken           = 1,
+                is_soundtrack       = 1,
+                original_tracks     = '1-8',
+                original_tracks_src = 'manual',
+                notes               = 'hand-written note'
+             WHERE album_id = ?1",
             params![album_id],
         )
         .unwrap();
@@ -628,21 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn set_original_tracks_stamps_manual_source() {
-        let conn = open_in_memory().unwrap();
-        let now = datetime!(2026-08-05 00:00:00 UTC);
-        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
-
-        set_original_tracks(&conn, album_id, Some(&"1-10".parse().unwrap())).unwrap();
-
-        let album = find_by_path(&conn, "Albums/A/Artist/Album")
-            .unwrap()
-            .unwrap();
-        assert_eq!(album.original_tracks.as_deref(), Some("1-10"));
-        assert_eq!(album.original_tracks_src.as_deref(), Some("manual"));
-    }
-
-    #[test]
     fn pending_sync_albums_excludes_missing_never_and_no_release_group() {
         let conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
@@ -759,7 +704,12 @@ mod tests {
             }],
         )
         .unwrap();
-        set_original_tracks(&conn, album_id, Some(&"1-8".parse().unwrap())).unwrap();
+        conn.execute(
+            "UPDATE albums SET original_tracks = '1-8', original_tracks_src = 'manual'
+             WHERE album_id = ?1",
+            params![album_id],
+        )
+        .unwrap();
 
         set_sync_ok(
             &mut conn,

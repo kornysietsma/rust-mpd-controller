@@ -1,14 +1,17 @@
 use std::collections::BTreeSet;
 
 use crate::enums::TagState;
-use crate::song_tags::SongTags;
+use crate::song_tags::{SongTags, present_tag as present};
 
-fn present(value: &Option<String>) -> Option<&str> {
-    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
+/// First four *characters* of a date string. Slicing by byte index would
+/// panic if a multi-byte character straddled index 4 — one mangled `Date` tag
+/// anywhere in the library would abort the whole scan.
 fn year_of(date: &str) -> &str {
-    &date[..date.len().min(4)]
+    let end = date
+        .char_indices()
+        .nth(4)
+        .map_or(date.len(), |(index, _)| index);
+    &date[..end]
 }
 
 /// Derive `tag_state` for one album directory. Recomputed from scratch on
@@ -202,6 +205,17 @@ mod tests {
             },
         ];
         assert_eq!(derive_tag_state(&songs), TagState::NoMbidConsistent);
+    }
+
+    #[test]
+    fn year_of_handles_multibyte_dates_without_panicking() {
+        assert_eq!(year_of("2020-01-01"), "2020");
+        assert_eq!(year_of("199"), "199");
+        assert_eq!(year_of(""), "");
+        // A multi-byte character straddling byte index 4 — byte slicing panics
+        // here, character slicing doesn't.
+        assert_eq!(year_of("19\u{2014}9"), "19\u{2014}9");
+        assert_eq!(year_of("\u{2014}\u{2014}\u{2014}\u{2014}\u{2014}"), "————");
     }
 
     #[test]

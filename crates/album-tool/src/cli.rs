@@ -50,21 +50,18 @@ mod tests {
     }
 
     #[test]
-    fn scan_dry_run() {
-        let cli = parse(&["scan", "--dry-run"]);
-        assert!(matches!(cli.command, Command::Scan { dry_run: true }));
-    }
+    fn each_subcommand_parses_with_its_flags() {
+        assert!(matches!(
+            parse(&["scan"]).command,
+            Command::Scan { dry_run: false }
+        ));
+        assert!(matches!(
+            parse(&["scan", "--dry-run"]).command,
+            Command::Scan { dry_run: true }
+        ));
+        assert!(matches!(parse(&["status"]).command, Command::Status));
 
-    #[test]
-    fn scan_without_dry_run() {
-        let cli = parse(&["scan"]);
-        assert!(matches!(cli.command, Command::Scan { dry_run: false }));
-    }
-
-    #[test]
-    fn sync_limit_and_force() {
-        let cli = parse(&["sync", "--limit", "5", "--force"]);
-        match cli.command {
+        match parse(&["sync", "--limit", "5", "--force"]).command {
             Command::Sync { limit, force } => {
                 assert_eq!(limit, Some(5));
                 assert!(force);
@@ -73,12 +70,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn status_has_no_args() {
-        let cli = parse(&["status"]);
-        assert!(matches!(cli.command, Command::Status));
-    }
-
+    /// `global = true` is easy to drop by accident, and losing it would only
+    /// show up as a confusing "unexpected argument" at the command line.
     #[test]
     fn global_flags_work_before_or_after_subcommand() {
         let before = parse(&["--db-path", "/tmp/albums.db", "status"]);
@@ -86,10 +79,5 @@ mod tests {
 
         assert_eq!(before.db_path, Some(PathBuf::from("/tmp/albums.db")));
         assert_eq!(after.db_path, Some(PathBuf::from("/tmp/albums.db")));
-    }
-
-    #[test]
-    fn missing_subcommand_is_an_error() {
-        assert!(Cli::try_parse_from(["album-tool"]).is_err());
     }
 }

@@ -184,13 +184,29 @@ struct ReleaseTrackInfo {
 }
 
 /// The track count of the earliest release. Callers pass only releases
-/// carrying both a date and media data — neither "earliest" nor "how many
-/// tracks" can be determined without them (see [`to_domain`]).
+/// [`release_track_info`] accepted.
 fn earliest_release_track_count(releases: &[ReleaseTrackInfo]) -> Option<i64> {
     releases
         .iter()
         .min_by(|a, b| a.date.cmp(&b.date))
         .map(|r| r.track_count)
+}
+
+/// Whether one release can contribute to `mb_original_count`, and its total
+/// track count if so. Excluded: no date (or a blank one) means it can't be
+/// ranked as "earliest"; no media, or media totalling zero tracks, means
+/// there is no track count to report — and a zero would otherwise be written
+/// out as the nonsense range `1-0`.
+///
+/// Split out from [`to_domain`] because `musicbrainz_rs::Release` can't be
+/// constructed in a test, but these two plain arguments can.
+fn release_track_info(
+    date: Option<String>,
+    media_track_counts: Option<&[i64]>,
+) -> Option<ReleaseTrackInfo> {
+    let date = date.filter(|d| !d.is_empty())?;
+    let track_count: i64 = media_track_counts?.iter().sum();
+    (track_count > 0).then_some(ReleaseTrackInfo { date, track_count })
 }
 
 fn to_domain(release_group: ReleaseGroup) -> ReleaseGroupData {
@@ -209,12 +225,10 @@ fn to_domain(release_group: ReleaseGroup) -> ReleaseGroupData {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|r| {
-            let date = r.date?.0;
-            if date.is_empty() {
-                return None;
-            }
-            let track_count: i64 = r.media?.iter().map(|m| i64::from(m.track_count)).sum();
-            Some(ReleaseTrackInfo { date, track_count })
+            let counts: Option<Vec<i64>> = r
+                .media
+                .map(|media| media.iter().map(|m| i64::from(m.track_count)).collect());
+            release_track_info(r.date.map(|d| d.0), counts.as_deref())
         })
         .collect();
 
@@ -300,6 +314,44 @@ mod tests {
     #[test]
     fn earliest_release_track_count_none_when_no_releases_qualify() {
         assert_eq!(earliest_release_track_count(&[]), None);
+    }
+
+    #[test]
+    fn release_track_info_sums_media_across_discs() {
+        assert_eq!(
+            release_track_info(Some("1972-02-14".to_string()), Some(&[10, 4])),
+            Some(ReleaseTrackInfo {
+                date: "1972-02-14".to_string(),
+                track_count: 14,
+            })
+        );
+    }
+
+    /// A release that can't be ranked or counted must be dropped, not
+    /// defaulted — a zero track count would be written out as `1-0`.
+    #[test]
+    fn release_track_info_excludes_releases_it_cannot_use() {
+        assert_eq!(release_track_info(None, Some(&[10])), None, "no date");
+        assert_eq!(
+            release_track_info(Some(String::new()), Some(&[10])),
+            None,
+            "blank date"
+        );
+        assert_eq!(
+            release_track_info(Some("1972".to_string()), None),
+            None,
+            "no media"
+        );
+        assert_eq!(
+            release_track_info(Some("1972".to_string()), Some(&[])),
+            None,
+            "empty media"
+        );
+        assert_eq!(
+            release_track_info(Some("1972".to_string()), Some(&[0])),
+            None,
+            "media totalling zero tracks"
+        );
     }
 
     #[test]

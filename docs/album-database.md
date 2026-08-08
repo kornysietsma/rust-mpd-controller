@@ -57,6 +57,7 @@ eye. **Don't "tune" any derivation rule without re-measuring.**
 |---|---|
 | Songs / album directories | 29,028 / 1,886 |
 | Top-level split | `Albums/` 1,663, `Compilations/` 196, `Unnmatched/` 27 |
+| Multi-disc directories | 195 |
 | Distinct release groups | ~1,830 across 1,886 albums (several albums share one) |
 | `OriginalDate` differs from `Date` | 421 directories |
 | Ratings imported | 416 rated, 69 `is_classical`, 17 `needs_relisten` |
@@ -127,6 +128,13 @@ Related deliberate choices:
 ## `scan`
 
 Reads MPD, rewrites derived columns, idempotent, no network beyond MPD.
+
+**MPD surfaces every tag this project needs, so nothing here parses audio
+files.** `Album`, `AlbumArtist`, `Artist`, `Title`, `Track`, `Date`,
+`OriginalDate`, `Genre`, `Label`, `Disc` and all six MusicBrainz ID tags come
+straight off the protocol. **No `id3`/`lofty`-style tag-reading crate is needed
+anywhere in this workspace** — if one starts to look necessary, check whether
+MPD already exposes the field first.
 
 The library is read in chunks — `listfiles` for top-level directories,
 `lsinfo` per top-level directory for chunk boundaries, then
@@ -249,6 +257,29 @@ justifying it:
 `is_spoken` / `is_soundtrack` from MB genres waits until the genre data can be
 inspected properly — the 69 hand-marked classical albums are already a better
 seed than any rule.
+
+## `status`
+
+Read-only, and the only command that reports rather than changes anything.
+Album counts by `tag_state` and `mb_sync_state`; `missing` directories;
+`mixed_mbid`/`partial_mbid` albums **for fixing by hand in Picard** — the tool
+reports tag problems and never edits audio files; `failed` syncs with their
+recorded errors; rating coverage and `needs_relisten`.
+
+## Error handling
+
+`anyhow::Result` at the CLI boundary, and one rule that shapes the rest:
+**expected conditions are values, not errors.** A MusicBrainz 404 sets
+`mb_sync_state = 'failed'` with a reason and the run carries on — it is a
+fact about that album, not a failure of the command. An unreadable database
+or an unparseable `mpd.conf` is a genuine error and aborts.
+
+The notable case on the aborting side is an album path matching none of the
+four known patterns: that means the data is wrong or a new directory shape has
+appeared, and silently inventing a title would be worse than stopping. The
+handful of `assert!`/`expect!` calls guard internal invariants (an album group
+is never empty; `pending_sync_albums` only returns rows with an MBID), not
+input.
 
 ## Schema changes are manual
 

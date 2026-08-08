@@ -98,7 +98,6 @@ fn apply_tag(song: &mut SongTags, key: &str, value: String) {
         "AlbumArtist" => song.album_artist = Some(value),
         "Artist" => song.artist = Some(value),
         "Title" => song.title = Some(value),
-        "Track" => song.track = Some(value),
         "Date" => song.date = Some(value),
         "OriginalDate" => song.original_date = Some(value),
         "Genre" => song.genre = Some(value),
@@ -106,10 +105,7 @@ fn apply_tag(song: &mut SongTags, key: &str, value: String) {
         "Disc" => song.disc = Some(value),
         "MUSICBRAINZ_ALBUMID" => song.mb_release_id = Some(value),
         "MUSICBRAINZ_RELEASEGROUPID" => song.mb_release_group_id = Some(value),
-        "MUSICBRAINZ_RELEASETRACKID" => song.mb_track_id = Some(value),
         "MUSICBRAINZ_ALBUMARTISTID" => song.mb_albumartist_id = Some(value),
-        // Anything else (duration, format, other MusicBrainz ids, etc.) is
-        // not part of the album database and is intentionally dropped.
         _ => {}
     }
 }
@@ -161,7 +157,6 @@ mod tests {
             ("AlbumArtist", "Artist"),
             ("Artist", "Artist"),
             ("Title", "Song"),
-            ("Track", "1"),
             ("Date", "2020"),
             ("OriginalDate", "2019"),
             ("Genre", "Rock"),
@@ -169,7 +164,10 @@ mod tests {
             ("Disc", "1"),
             ("MUSICBRAINZ_ALBUMID", "release-id"),
             ("MUSICBRAINZ_RELEASEGROUPID", "release-group-id"),
+            // Sent by MPD, deliberately not stored — must be ignored, not
+            // mistaken for a record boundary.
             ("MUSICBRAINZ_RELEASETRACKID", "track-id"),
+            ("Track", "1"),
             ("MUSICBRAINZ_ALBUMARTISTID", "albumartist-id"),
         ]));
 
@@ -182,7 +180,6 @@ mod tests {
                 album_artist: Some("Artist".to_string()),
                 artist: Some("Artist".to_string()),
                 title: Some("Song".to_string()),
-                track: Some("1".to_string()),
                 date: Some("2020".to_string()),
                 original_date: Some("2019".to_string()),
                 genre: Some("Rock".to_string()),
@@ -190,7 +187,6 @@ mod tests {
                 disc: Some("1".to_string()),
                 mb_release_id: Some("release-id".to_string()),
                 mb_release_group_id: Some("release-group-id".to_string()),
-                mb_track_id: Some("track-id".to_string()),
                 mb_albumartist_id: Some("albumartist-id".to_string()),
             }]
         );

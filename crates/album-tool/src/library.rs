@@ -215,22 +215,8 @@ impl LibrarySource for FixtureLibrarySource {
 mod tests {
     use super::*;
 
-    fn fixture_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/library.txt")
-    }
-
-    #[test]
-    fn fixture_source_loads_committed_fixture() {
-        let source = FixtureLibrarySource::load(&fixture_path()).unwrap();
-        let songs = source.songs().unwrap();
-
-        assert!(
-            songs.len() >= 20,
-            "expected at least 20 fixture songs, got {}",
-            songs.len()
-        );
-        assert!(songs.iter().all(|s| !s.path.is_empty()));
-    }
+    // The success path is covered by `scan`'s tests, which assert the exact
+    // album and tag_state counts this fixture is built to produce.
 
     #[test]
     fn fixture_source_missing_file_is_a_clear_error() {

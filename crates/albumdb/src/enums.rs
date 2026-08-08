@@ -85,60 +85,32 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    /// The strings here are the contract with the schema — they must match
+    /// its `CHECK` constraints and column comments exactly, so they're spelled
+    /// out rather than generated from the enums they're checking.
     #[test]
-    fn album_status_round_trips_every_variant() {
-        for s in ["present", "missing"] {
-            assert_eq!(AlbumStatus::from_str(s).unwrap().as_str(), s);
+    fn every_variant_round_trips_through_its_schema_string() {
+        macro_rules! assert_round_trips {
+            ($ty:ty, $($s:literal),+) => {
+                $(assert_eq!(<$ty>::from_str($s).unwrap().as_str(), $s);)+
+            };
         }
-    }
 
-    #[test]
-    fn genre_source_round_trips_every_variant() {
-        for s in ["tag", "mb"] {
-            assert_eq!(GenreSource::from_str(s).unwrap().as_str(), s);
-        }
-    }
-
-    #[test]
-    fn tag_state_round_trips_every_variant() {
-        for s in [
+        assert_round_trips!(AlbumStatus, "present", "missing");
+        assert_round_trips!(GenreSource, "tag", "mb");
+        assert_round_trips!(
+            TagState,
             "clean",
             "mixed_mbid",
             "partial_mbid",
             "no_mbid_consistent",
             "no_mbid_varied",
-            "no_mbid_incomplete",
-        ] {
-            assert_eq!(TagState::from_str(s).unwrap().as_str(), s);
-        }
-    }
-
-    #[test]
-    fn title_source_round_trips_every_variant() {
-        for s in ["tag", "path", "manual"] {
-            assert_eq!(TitleSource::from_str(s).unwrap().as_str(), s);
-        }
-    }
-
-    #[test]
-    fn match_policy_round_trips_every_variant() {
-        for s in ["auto", "never", "recheck"] {
-            assert_eq!(MatchPolicy::from_str(s).unwrap().as_str(), s);
-        }
-    }
-
-    #[test]
-    fn sync_state_round_trips_every_variant() {
-        for s in ["pending", "ok", "failed", "skipped"] {
-            assert_eq!(SyncState::from_str(s).unwrap().as_str(), s);
-        }
-    }
-
-    #[test]
-    fn verify_state_round_trips_every_variant() {
-        for s in ["unverified", "ok", "drifted"] {
-            assert_eq!(VerifyState::from_str(s).unwrap().as_str(), s);
-        }
+            "no_mbid_incomplete"
+        );
+        assert_round_trips!(TitleSource, "tag", "path", "manual");
+        assert_round_trips!(MatchPolicy, "auto", "never", "recheck");
+        assert_round_trips!(SyncState, "pending", "ok", "failed", "skipped");
+        assert_round_trips!(VerifyState, "unverified", "ok", "drifted");
     }
 
     #[test]

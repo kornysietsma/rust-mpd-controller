@@ -1,3 +1,21 @@
 [workspace]
-resolver = "2"
+# Resolver 3 (MSRV-aware) is the default for edition 2024 packages, but a
+# virtual manifest has no edition to infer it from, so it must be set here.
+resolver = "3"
 members = ["crates/controller", "crates/albumdb", "crates/album-tool"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Korny Sietsma <korny@sietsma.com>"]
+license = "MIT"
+
+# Only dependencies used by more than one crate are hoisted — single-crate
+# ones stay in the crate that needs them. Features are still declared per
+# crate and unioned, so `tokio` can be "full" in one and minimal in another.
+[workspace.dependencies]
+anyhow = "1.0.104"
+mpd_client = "1.4.1"
+pretty_assertions = "1.4.1"
+time = "0.3.55"
+tokio = "1.53.1"
