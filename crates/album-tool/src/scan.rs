@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use albumdb::{
     AlbumFacts, Clock, Connection, GenreEntry, GenreSource, SongTags, TagState, TitleSource,
-    derive_tag_state, normalise_date, parse_album_path, replace_genres, upsert_album,
+    all_present, derive_tag_state, find_by_path, mark_missing, normalise_date, parse_album_path,
+    replace_genres, upsert_album,
 };
 use anyhow::{Context, Result};
 
@@ -133,10 +134,94 @@ fn build_album_group(path: String, mut songs: Vec<SongTags>) -> Result<AlbumGrou
     })
 }
 
+/// Which paths a scan would add, update, or find missing (spec §5.2, §5.5):
+/// `added` are paths with no existing row at all, `updated` are paths that
+/// already had a row (present or missing) and were seen again in MPD, and
+/// `newly_missing` are paths that were `status = 'present'` before this scan
+/// but are absent from it. All three are path-sorted for stable output.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanReport {
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
+    pub newly_missing: Vec<String>,
+}
+
+impl fmt::Display for ScanReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "  added {} / updated {} / newly missing {}",
+            self.added.len(),
+            self.updated.len(),
+            self.newly_missing.len()
+        )?;
+        if !self.added.is_empty() {
+            writeln!(f, "  new:")?;
+            for path in &self.added {
+                writeln!(f, "    + {path}")?;
+            }
+        }
+        if !self.newly_missing.is_empty() {
+            writeln!(f, "  missing:")?;
+            for path in &self.newly_missing {
+                writeln!(f, "    - {path}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Diffs `groups` against the albums currently `status = 'present'` in the
+/// database, without writing anything — used by both `write_albums` (to know
+/// what to mark missing) and `scan --dry-run` (which reports without
+/// touching the database).
+pub fn compute_report(conn: &Connection, groups: &[AlbumGroup]) -> Result<ScanReport> {
+    let existing_present: HashSet<String> = all_present(conn)
+        .context("failed to read existing present albums")?
+        .into_iter()
+        .map(|a| a.path)
+        .collect();
+
+    let mut added = Vec::new();
+    let mut updated = Vec::new();
+    for group in groups {
+        let existed = find_by_path(conn, &group.facts.path)
+            .with_context(|| format!("failed to look up album {:?}", group.facts.path))?
+            .is_some();
+        if existed {
+            updated.push(group.facts.path.clone());
+        } else {
+            added.push(group.facts.path.clone());
+        }
+    }
+
+    let scanned_paths: HashSet<&str> = groups.iter().map(|g| g.facts.path.as_str()).collect();
+    let mut newly_missing: Vec<String> = existing_present
+        .into_iter()
+        .filter(|path| !scanned_paths.contains(path.as_str()))
+        .collect();
+    newly_missing.sort();
+
+    Ok(ScanReport {
+        added,
+        updated,
+        newly_missing,
+    })
+}
+
 /// Writes every group via `upsert_album`, then replaces its `source = 'tag'`
 /// genre row (or clears it, if the album now has no tag genre — keeps a
-/// re-scan idempotent).
-pub fn write_albums(conn: &mut Connection, groups: &[AlbumGroup], clock: &dyn Clock) -> Result<()> {
+/// re-scan idempotent). Also reconciles the other direction (spec §5.2):
+/// any album still `status = 'present'` from a previous scan but absent from
+/// `groups` is marked `missing`, never deleted. Returns the diff computed by
+/// [`compute_report`].
+pub fn write_albums(
+    conn: &mut Connection,
+    groups: &[AlbumGroup],
+    clock: &dyn Clock,
+) -> Result<ScanReport> {
+    let report = compute_report(conn, groups)?;
+
     for group in groups {
         let album_id = upsert_album(conn, &group.facts, clock.now())
             .with_context(|| format!("failed to write album {:?}", group.facts.path))?;
@@ -153,7 +238,16 @@ pub fn write_albums(conn: &mut Connection, groups: &[AlbumGroup], clock: &dyn Cl
             format!("failed to write tag genre for album {:?}", group.facts.path)
         })?;
     }
-    Ok(())
+
+    for path in &report.newly_missing {
+        let album = find_by_path(conn, path)
+            .with_context(|| format!("failed to look up album {path:?}"))?
+            .with_context(|| format!("album {path:?} vanished mid-scan"))?;
+        mark_missing(conn, album.album_id)
+            .with_context(|| format!("failed to mark album {path:?} missing"))?;
+    }
+
+    Ok(report)
 }
 
 /// Counts of albums per `tag_state`, in the order spec §5.4's table lists
@@ -200,7 +294,7 @@ impl fmt::Display for TagStateCounts {
 mod tests {
     use super::*;
     use crate::library::{FixtureLibrarySource, LibrarySource};
-    use albumdb::{FixedClock, find_by_path, open_in_memory};
+    use albumdb::{FixedClock, find_by_path, open_in_memory, set_rating};
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use time::macros::datetime;
@@ -348,5 +442,156 @@ mod tests {
         let after = albumdb::all_present(&conn).unwrap();
 
         assert_eq!(before, after);
+    }
+
+    /// Drops one album out of the fixture entirely, simulating a directory
+    /// that vanished from MPD (plan Step 9).
+    fn without_glass_horizon() -> Vec<SongTags> {
+        fixture_songs()
+            .into_iter()
+            .filter(|s| !s.path.starts_with("Albums/A/Aurora Fields/Glass Horizon/"))
+            .collect()
+    }
+
+    #[test]
+    fn removed_album_becomes_missing_with_rating_intact() {
+        let mut conn = open_in_memory().unwrap();
+        let clock1 = FixedClock(datetime!(2026-08-06 00:00:00 UTC));
+
+        let groups = group_into_albums(fixture_songs()).unwrap();
+        write_albums(&mut conn, &groups, &clock1).unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        set_rating(&conn, album.album_id, Some(5), clock1.0).unwrap();
+
+        let clock2 = FixedClock(datetime!(2026-08-07 00:00:00 UTC));
+        let groups_without = group_into_albums(without_glass_horizon()).unwrap();
+        let report = write_albums(&mut conn, &groups_without, &clock2).unwrap();
+
+        assert_eq!(
+            report.newly_missing,
+            vec!["Albums/A/Aurora Fields/Glass Horizon".to_string()]
+        );
+        assert!(report.added.is_empty());
+
+        let missing = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        assert_eq!(missing.status.as_str(), "missing");
+        assert_eq!(missing.rating, Some(5));
+        // `last_seen` records "last seen present" — going missing must not
+        // touch it (spec §5.2).
+        assert_eq!(missing.last_seen, "2026-08-06T00:00:00Z");
+    }
+
+    #[test]
+    fn album_reappearing_after_missing_returns_to_present_with_rating_intact() {
+        let mut conn = open_in_memory().unwrap();
+        let clock1 = FixedClock(datetime!(2026-08-06 00:00:00 UTC));
+
+        let all_songs = fixture_songs();
+        write_albums(
+            &mut conn,
+            &group_into_albums(all_songs.clone()).unwrap(),
+            &clock1,
+        )
+        .unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        set_rating(&conn, album.album_id, Some(5), clock1.0).unwrap();
+
+        let clock2 = FixedClock(datetime!(2026-08-07 00:00:00 UTC));
+        write_albums(
+            &mut conn,
+            &group_into_albums(without_glass_horizon()).unwrap(),
+            &clock2,
+        )
+        .unwrap();
+        assert_eq!(
+            find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+                .unwrap()
+                .unwrap()
+                .status
+                .as_str(),
+            "missing"
+        );
+
+        let clock3 = FixedClock(datetime!(2026-08-08 00:00:00 UTC));
+        let report =
+            write_albums(&mut conn, &group_into_albums(all_songs).unwrap(), &clock3).unwrap();
+
+        assert!(report.newly_missing.is_empty());
+        assert!(
+            report
+                .updated
+                .contains(&"Albums/A/Aurora Fields/Glass Horizon".to_string())
+        );
+
+        let reappeared = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reappeared.status.as_str(), "present");
+        assert_eq!(reappeared.rating, Some(5));
+        assert_eq!(reappeared.last_seen, "2026-08-08T00:00:00Z");
+    }
+
+    #[test]
+    fn renamed_directory_shows_as_a_new_and_a_missing_row_with_rating_intact() {
+        let mut conn = open_in_memory().unwrap();
+        let clock1 = FixedClock(datetime!(2026-08-06 00:00:00 UTC));
+
+        let groups = group_into_albums(fixture_songs()).unwrap();
+        write_albums(&mut conn, &groups, &clock1).unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        set_rating(&conn, album.album_id, Some(4), clock1.0).unwrap();
+
+        let renamed: Vec<SongTags> = fixture_songs()
+            .into_iter()
+            .map(|mut s| {
+                if s.path.starts_with("Albums/A/Aurora Fields/Glass Horizon/") {
+                    s.path = s.path.replacen(
+                        "Albums/A/Aurora Fields/Glass Horizon/",
+                        "Albums/A/Aurora Fields/Glass Horizon (Remastered)/",
+                        1,
+                    );
+                }
+                s
+            })
+            .collect();
+
+        let clock2 = FixedClock(datetime!(2026-08-07 00:00:00 UTC));
+        let report =
+            write_albums(&mut conn, &group_into_albums(renamed).unwrap(), &clock2).unwrap();
+
+        // Deliberately not auto-matched (spec §5.2, §9): a rename produces
+        // one new unrated row and one missing row that keeps its rating,
+        // visible side by side in the report rather than silently merged.
+        assert_eq!(
+            report.added,
+            vec!["Albums/A/Aurora Fields/Glass Horizon (Remastered)".to_string()]
+        );
+        assert_eq!(
+            report.newly_missing,
+            vec!["Albums/A/Aurora Fields/Glass Horizon".to_string()]
+        );
+
+        let old = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon")
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.status.as_str(), "missing");
+        assert_eq!(old.rating, Some(4));
+
+        let new = find_by_path(&conn, "Albums/A/Aurora Fields/Glass Horizon (Remastered)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(new.status.as_str(), "present");
+        assert_eq!(new.rating, None);
     }
 }

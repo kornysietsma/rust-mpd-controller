@@ -26,15 +26,19 @@ fn main() -> Result<()> {
             let counts = scan::TagStateCounts::from_groups(&groups);
 
             if dry_run {
+                let conn = albumdb::open(&db_path)?;
+                let report = scan::compute_report(&conn, &groups)?;
                 println!("scan (dry run, nothing written): {} albums", groups.len());
+                println!("{report}");
             } else {
                 let mut conn = albumdb::open(&db_path)?;
-                scan::write_albums(&mut conn, &groups, &albumdb::SystemClock)?;
+                let report = scan::write_albums(&mut conn, &groups, &albumdb::SystemClock)?;
                 println!(
                     "scan: {} albums written to {}",
                     groups.len(),
                     db_path.display()
                 );
+                println!("{report}");
             }
             println!("{counts}");
         }

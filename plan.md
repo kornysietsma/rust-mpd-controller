@@ -437,7 +437,7 @@ warnings` clean.
 
 ---
 
-### Step 9 — `scan`: missing-album handling
+### Step 9 — `scan`: missing-album handling — DONE (automated)
 
 No automatic rename detection (spec §5.2, §9) — cut after review as
 unmeasured complexity. Disappearances are soft-deleted, so the only real risk
@@ -446,33 +446,62 @@ moved directory shows up as one new (unrated) row and one `missing` row that
 still carries its rating; reconciling that by hand (repoint the old row's
 `path`, drop the duplicate) is a manual SQL job, not a tool feature, for now.
 
-- [ ] Diff MPD paths against stored paths.
-- [ ] Path in MPD only → `upsert_album` inserts a new row (Step 8 already
-      does this for a first scan; confirm it composes correctly once existing
-      rows are in play too).
-- [ ] Path in DB only → `mark_missing`. **Never delete a row** — deleting
-      silently discards a rating.
-- [ ] `scan`'s report lists new and missing paths side by side (spec §5.5),
-      so a genuine rename is obvious at a glance.
+- [x] Diff MPD paths against stored paths — `scan::compute_report`
+      (`crates/album-tool/src/scan.rs`) reads `all_present` plus one
+      `find_by_path` per group. Entirely read-only, so it also backs
+      `--dry-run`.
+- [x] Path in MPD only → `upsert_album` inserts a new row (Step 8 already
+      did this for a first scan; the reappearance test below confirms it
+      still composes correctly once existing rows are in play).
+- [x] Path in DB only (previously `present`) → `mark_missing`. Never deletes
+      a row.
+- [x] `scan`'s report lists new and missing paths side by side (spec §5.5):
+      `ScanReport { added, updated, newly_missing }`, printed by both `scan`
+      and `scan --dry-run` — the dry-run path now opens the database
+      read-only to compute the diff, rather than skipping it entirely as
+      Step 8's placeholder did.
 
-**Automated:**
-- [ ] Remove an album entirely (drop it from a modified fixture) → re-scan →
-      `status = 'missing'`, row still present, rating intact.
-- [ ] An album returning after being `missing` (same path reappears in the
-      fixture) → re-scan → back to `status = 'present'`, rating intact.
-- [ ] Renaming a directory in a modified fixture → re-scan → the old path's
-      row is `missing` with its rating intact, and a new unrated row exists
-      at the new path. Confirms it's *not* silently merged and nothing is
-      lost either way.
+**Automated (3 new tests, all passing):**
+- [x] Removing an album from the fixture → re-scan → `status = 'missing'`,
+      rating intact, `last_seen` untouched (it records "last seen present").
+- [x] A `missing` album reappearing (same path back in the fixture) →
+      re-scan → back to `present`, rating intact, `last_seen` updated.
+- [x] Renaming a directory in the fixture → re-scan → old path `missing`
+      with its rating intact, new path a fresh unrated row — confirms it's
+      *not* silently merged, matching the "no auto-rename" decision above.
 
-**Manual:** rename a real album directory, `mpc update`, re-scan, confirm the
-old row is `missing` with its rating intact and a new unrated row exists at
-the new path. Rename it back, re-scan, confirm it returns to `present` with
-the rating.
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (album-tool 39/39,
+albumdb 53/53, controller 57/57).
+
+**Manual verification deferred, not done.** Checked `--dry-run` against the
+real `mpd.conf`-derived `albums.db` and found it has **zero rows** — Step 8's
+"Manual" paragraph recorded live counts matching spec §5.4, but nothing was
+left persisted (either that check ran read-only, or the file was reset
+since). Not a Step 9 bug: against an empty DB, `--dry-run` correctly reported
+all 1,886 albums as `added`, 0 `updated`, 0 `missing`. Korny chose to skip a
+throwaway real scan just to exercise-and-revert a directory rename, and fold
+Step 9's live rename check into Step 10's first real scan instead — see the
+new checklist item at the top of Step 10.
 
 ---
 
 ### Step 10 — Ratings import (Python one-off, not Rust)
+
+**Before this step: the live `albums.db` is currently empty (see Step 9's
+last paragraph).** The first real `album-tool scan` (not `--dry-run`) against
+the live library needs to happen before the ratings import can run at all
+(spec §6: "It must run after a `scan`"). Fold Step 9's deferred manual check
+into that same run:
+
+- [ ] Run `album-tool scan` for real against the live library. Confirm the
+      `tag_state` counts match spec §5.4 (1833/2/1/43/3/4) and the report
+      shows 1,886 `added`, 0 `updated`, 0 `missing`.
+- [ ] Rename one real album directory, `mpc update`, re-scan: confirm the old
+      path is `missing` (rating intact, if it had one) and a new unrated row
+      exists at the new path, both listed in the report. Rename it back,
+      re-scan, confirm it returns to `present` with rating intact and the
+      report shows it as `updated`.
 
 **No Rust, no automated tests.** This runs once against real data; correctness
 is established by looking at the result. Must run **after** a successful
