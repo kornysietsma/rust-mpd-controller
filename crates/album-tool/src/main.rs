@@ -1,6 +1,5 @@
 mod cli;
 mod library;
-mod mpd_conf;
 mod mpd_wire;
 mod musicbrainz;
 mod scan;
@@ -78,7 +77,11 @@ fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
     }
 
     let conf = mpd_conf::load(&mpd_conf_path(cli)?)?;
-    Ok(conf.music_directory.join(DB_FILENAME))
+    let music_directory = conf.music_directory.context(
+        "music_directory is not set in mpd.conf (it's commented out by default) \
+         — required so album-tool can locate albums.db, or pass --db-path",
+    )?;
+    Ok(music_directory.join(DB_FILENAME))
 }
 
 /// `mpd_host` is hardcoded to `localhost` — reading `mpd.conf` off the local

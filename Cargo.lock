@@ -28,6 +28,7 @@ dependencies = [
  "albumdb",
  "anyhow",
  "clap",
+ "mpd-conf",
  "mpd_client",
  "musicbrainz_rs",
  "pretty_assertions",
@@ -440,6 +441,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "log",
+ "mpd-conf",
  "mpd_client",
  "percent-encoding",
  "pretty_assertions",
@@ -1623,6 +1625,14 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mpd-conf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pretty_assertions",
 ]
 
 [[package]]

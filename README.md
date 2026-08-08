@@ -108,12 +108,11 @@ requires the installed bundle).
 
 ## Configuration
 
-Optional TOML file at `~/.config/mpd-controller/config.toml`. Sensible
-defaults apply if the file, or individual fields, are missing:
+Optional TOML file at `~/.config/mpd-controller/config.toml`. **Every
+connection setting is inferred from MPD's own `~/.mpd/mpd.conf`**, so in the
+normal case the only thing worth putting here is `key_playlists`:
 
 ```toml
-mpd_host = "localhost"    # default: localhost
-mpd_port = 6600           # default: 6600
 key_playlists = [         # default: empty — controls the "Add to" submenu, see below
   "Five stars",
   "My Top Rated",
@@ -121,9 +120,21 @@ key_playlists = [         # default: empty — controls the "Add to" submenu, se
 ]
 ```
 
-If the file exists but fails to parse, the app fails to start rather than
-silently falling back to defaults. A `key_playlists` entry naming a playlist
-that doesn't exist in MPD is logged at `warn` and omitted from the menu.
+The rest exist only to override that inference:
+
+| Key | Default |
+|---|---|
+| `mpd_host` | `localhost` — `mpd.conf`'s `bind_to_address` doesn't reliably name a reachable address, so this is never inferred |
+| `mpd_port` | `mpd.conf`'s `port`, else 6600 |
+| `mpd_conf` | `~/.mpd/mpd.conf` — where to look for MPD's config |
+| `db_path` | `<music_directory>/albums.db`, from `mpd.conf`. The counterpart to `album-tool --db-path`; a GUI app takes no command line, so this file is the only place an override can live |
+
+If `mpd.conf` is missing or unreadable the app still starts, logs a warning,
+and falls back to `localhost:6600`. If `config.toml` itself exists but fails to
+parse — including an unrecognised key, which is usually a typo — the app fails
+to start rather than silently ignoring it. A `key_playlists` entry naming a
+playlist that doesn't exist in MPD is logged at `warn` and omitted from the
+menu.
 
 ## Using it
 

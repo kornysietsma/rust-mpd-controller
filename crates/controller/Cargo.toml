@@ -15,6 +15,7 @@ log = "0.4.33"
 # — two versions means clicks silently stop arriving.
 tray-icon = "0.24.2"
 tao = "0.35.3"
+mpd-conf = { path = "../mpd-conf" }
 mpd_client.workspace = true
 tokio = { workspace = true, features = ["full"] }
 shlex = "2.0.1"

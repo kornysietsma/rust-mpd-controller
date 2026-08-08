@@ -1,16 +1,23 @@
 # How it works
 
-A Cargo workspace of three crates:
+A Cargo workspace of four crates:
 
 | Crate | Responsibility |
 |---|---|
 | `crates/controller` | the menu-bar app and `mpdcontrol://` URL scheme — everything below |
 | `crates/albumdb` | SQLite album database: schema, domain types, pure derivation logic |
 | `crates/album-tool` | the `scan`/`sync`/`status` CLI that maintains it |
+| `crates/mpd-conf` | parses MPD's own `mpd.conf`; shared by both binaries |
 
-The two halves are independent — `controller` doesn't depend on `albumdb`. For
-the album side see [album-database.md](album-database.md); the rest of this
-document is about `controller`.
+The two halves are otherwise independent — `controller` doesn't depend on
+`albumdb`. For the album side see [album-database.md](album-database.md); the
+rest of this document is about `controller`.
+
+`mpd-conf` exists so neither binary duplicates settings MPD already owns: both
+infer the port (and the album database's location) from `mpd.conf` rather than
+asking to be told twice. It deliberately returns `music_directory` as an
+`Option` and leaves "is that required?" to the caller — `album-tool` can't
+work without it, the menu-bar app doesn't care.
 
 One binary, one long-running process. Both entry points — the menu bar and the
 URL scheme — are handled inside the same process, which owns the MPD

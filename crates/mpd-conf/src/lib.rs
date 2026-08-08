@@ -1,3 +1,15 @@
+//! Reads MPD's own `mpd.conf` off disk, so nothing in this workspace has to
+//! duplicate settings MPD already owns.
+//!
+//! MPD's protocol `config` command is rejected for non-local clients, but both
+//! consumers here always run on the same machine as MPD, so reading the file
+//! directly sidesteps that entirely.
+//!
+//! `music_directory` is optional: it is commented out in a default `mpd.conf`,
+//! and only a caller that needs to locate `albums.db` cares whether it is set.
+//! Deciding that it is *required* is the caller's job, not this crate's — the
+//! menu-bar app runs perfectly well without it.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +19,7 @@ const DEFAULT_PORT: u16 = 6600;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MpdConf {
-    pub music_directory: PathBuf,
+    pub music_directory: Option<PathBuf>,
     pub port: u16,
 }
 
@@ -19,7 +31,7 @@ pub fn default_path() -> Result<PathBuf> {
 pub fn load(path: &Path) -> Result<MpdConf> {
     let contents = fs::read_to_string(path).with_context(|| {
         format!(
-            "failed to read MPD config at {} (this should be MPD's own mpd.conf; override with --mpd-conf)",
+            "failed to read MPD config at {} (this should be MPD's own mpd.conf)",
             path.display()
         )
     })?;
@@ -60,11 +72,6 @@ fn parse(contents: &str, home: &str) -> Result<MpdConf> {
 
         depth = (depth + brace_delta(line)).max(0);
     }
-
-    let music_directory = music_directory.context(
-        "music_directory is not set in mpd.conf (it's commented out by default) \
-         — required so album-tool can locate albums.db",
-    )?;
 
     Ok(MpdConf {
         music_directory,
@@ -123,7 +130,7 @@ mod tests {
         assert_eq!(
             conf,
             MpdConf {
-                music_directory: PathBuf::from("/music/library"),
+                music_directory: Some(PathBuf::from("/music/library")),
                 port: 6601,
             }
         );
@@ -149,7 +156,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(conf.music_directory, PathBuf::from("/music/library"));
+        assert_eq!(conf.music_directory, Some(PathBuf::from("/music/library")));
         assert_eq!(conf.port, 6601);
     }
 
@@ -175,18 +182,20 @@ mod tests {
     fn expands_tilde_in_music_directory() {
         let conf = parse(r#"music_directory "~/music""#, "/home/korny").unwrap();
 
-        assert_eq!(conf.music_directory, PathBuf::from("/home/korny/music"));
+        assert_eq!(
+            conf.music_directory,
+            Some(PathBuf::from("/home/korny/music"))
+        );
     }
 
+    /// It's commented out in a default mpd.conf, so absence is normal, not an
+    /// error — the port is still usable. Callers that need it say so.
     #[test]
-    fn missing_music_directory_is_a_clear_error() {
-        let result = parse(r#"port "6601""#, "/home/korny");
+    fn missing_music_directory_is_none_not_an_error() {
+        let conf = parse(r#"port "6601""#, "/home/korny").unwrap();
 
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("music_directory"),
-            "error should mention music_directory, was: {err}"
-        );
+        assert_eq!(conf.music_directory, None);
+        assert_eq!(conf.port, 6601);
     }
 
     #[test]
@@ -205,7 +214,7 @@ mod tests {
     #[test]
     fn load_missing_file_is_a_clear_error() {
         let path = std::env::temp_dir().join(format!(
-            "album-tool-test-nonexistent-{}-{}.conf",
+            "mpd-conf-test-nonexistent-{}-{}.conf",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -217,7 +226,7 @@ mod tests {
 
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("mpd.conf") || err.contains("--mpd-conf"),
+            err.contains("mpd.conf"),
             "error should mention mpd.conf, was: {err}"
         );
     }
@@ -234,6 +243,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(conf.music_directory, PathBuf::from("/music/library"));
+        assert_eq!(conf.music_directory, Some(PathBuf::from("/music/library")));
     }
 }

@@ -2,7 +2,12 @@
 # Resolver 3 (MSRV-aware) is the default for edition 2024 packages, but a
 # virtual manifest has no edition to infer it from, so it must be set here.
 resolver = "3"
-members = ["crates/controller", "crates/albumdb", "crates/album-tool"]
+members = [
+    "crates/controller",
+    "crates/albumdb",
+    "crates/album-tool",
+    "crates/mpd-conf",
+]
 
 [workspace.package]
 version = "0.1.0"

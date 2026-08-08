@@ -16,13 +16,13 @@ Crate-API sharp edges (`mpd_client`, `musicbrainz_rs`, `rusqlite`) live in
 `albums.db` sits **inside the music folder**, so it's backed up and moved with
 the music it describes.
 
-The path is not hand-configured and there is **no TOML config file**.
-`album-tool` reads MPD's own `~/.mpd/mpd.conf` off disk for `music_directory`
-and `port`, then uses `<music_directory>/albums.db`. MPD's *protocol* `config`
-command is rejected for non-local clients, but reading the file directly
-sidesteps that — `album-tool` always runs on the same machine as MPD, which it
-must anyway to reach the database file. `mpd_host` is hardcoded to
-`localhost` for the same reason (`bind_to_address` doesn't reliably name a
+The path is not hand-configured and `album-tool` has **no config file of its
+own**. It reads MPD's `~/.mpd/mpd.conf` off disk (via the `mpd-conf` crate) for
+`music_directory` and `port`, then uses `<music_directory>/albums.db`. MPD's
+*protocol* `config` command is rejected for non-local clients, but reading the
+file directly sidesteps that — `album-tool` always runs on the same machine as
+MPD, which it must anyway to reach the database file. `mpd_host` is hardcoded
+to `localhost` for the same reason (`bind_to_address` doesn't reliably name a
 reachable address).
 
 `--mpd-conf <path>` and `--db-path <path>` override independently.
@@ -30,6 +30,14 @@ reachable address).
 for the port, because it still has to talk to MPD. That's deliberate —
 `--db-path` exists so a scratch database doesn't have to sit inside a real
 `music_directory`, not to let `album-tool` avoid MPD.
+
+The menu-bar app derives the same two values the same way, so the two agree by
+construction rather than by both being configured correctly. It has the
+equivalent overrides in `~/.config/mpd-controller/config.toml` (`mpd_conf`,
+`db_path`) since a GUI app takes no command line — see the README. Unlike
+`album-tool` it treats an unreadable `mpd.conf` as a warning and starts anyway;
+a missing `music_directory` only costs it the database path, which it doesn't
+consume yet.
 
 ### `journal_mode = DELETE` is load-bearing
 

@@ -9,6 +9,10 @@ A Cargo workspace with three crates:
 - `crates/albumdb` — the SQLite album database: schema, domain types, and all
   the pure derivation logic.
 - `crates/album-tool` — the `scan`/`sync`/`status` CLI that maintains it.
+- `crates/mpd-conf` — parses MPD's own `mpd.conf`. Both binaries infer the MPD
+  port, and the album database's location, from it rather than being told
+  twice. Returns `music_directory` as an `Option`: `album-tool` requires it,
+  the menu-bar app doesn't.
 
 See `README.md` for architecture and usage, `docs/implementation-details.md`
 for the non-obvious details behind the controller — including the measured
