@@ -1,4 +1,4 @@
-//! String enums for `albums` columns, matching the schema exactly (§4.2).
+//! String enums for `albums` columns, matching `sql/schema.sql` exactly.
 //!
 //! `status`, `match_policy` and `tag_state` are also enforced by a SQL
 //! `CHECK` constraint; `title_source`, `mb_sync_state` and `mb_verify_state`

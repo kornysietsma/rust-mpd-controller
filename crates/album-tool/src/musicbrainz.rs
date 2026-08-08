@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use musicbrainz_rs::entity::release_group::ReleaseGroup;
 use musicbrainz_rs::prelude::*;
 
-/// One release-group genre with its MusicBrainz vote count (spec §2.2, §7.3).
+/// One release-group genre with its MusicBrainz vote count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenreVote {
     pub genre: String,
@@ -15,17 +15,17 @@ pub struct GenreVote {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseGroupData {
     pub genres: Vec<GenreVote>,
-    /// The track count of the earliest release in the group (spec §7.3's
-    /// `mb_original_count`) — the *tagged* release often carries bonus
-    /// tracks and can't supply this. `None` when no release in the group
-    /// carries both a date and media/track-count data to derive it from.
+    /// The track count of the earliest release in the group, stored as
+    /// `mb_original_count` — the *tagged* release often carries bonus tracks
+    /// and can't supply this. `None` when no release in the group carries
+    /// both a date and media/track-count data to derive it from.
     pub earliest_release_track_count: Option<i64>,
 }
 
 /// Why a release-group fetch failed. `NotFound` (404) means the MBID is
-/// stale and needs a Picard fix (spec §7.2) — it is never retried. Anything
-/// else is a transient-or-unknown failure that already went through the
-/// retry/backoff loop and gave up.
+/// stale and needs a Picard fix — it is never retried. Anything else is a
+/// transient-or-unknown failure that already went through the retry/backoff
+/// loop and gave up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MusicBrainzError {
     NotFound,
@@ -42,21 +42,20 @@ impl std::fmt::Display for MusicBrainzError {
 }
 
 /// Fetches release-group data from MusicBrainz. `sync`'s only dependency on
-/// the network — a fake implementation stands in for it under test (plan
-/// §1.3), the same shape as `LibrarySource` for MPD.
+/// the network — a fake implementation stands in for it under test, the same
+/// shape as `LibrarySource` for MPD.
 pub trait MusicBrainzClient {
     async fn release_group(&self, mbid: &str) -> Result<ReleaseGroupData, MusicBrainzError>;
 }
 
 /// A descriptive User-Agent identifying the application and a contact
-/// address, as MusicBrainz's API policy requires (spec §7.1) — anonymous or
-/// generic agents get blocked.
+/// address, as MusicBrainz's API policy requires — anonymous or generic
+/// agents get blocked.
 pub const USER_AGENT: &str = "album-tool/0.1.0 (korny@sietsma.com)";
 
 /// How long to wait between requests, and how the retry loop backs off on
-/// failure. Production uses [`RequestPolicy::default`]; tests use much
-/// shorter durations so they run fast without needing a fake clock (Korny's
-/// call — see plan.md Step 12).
+/// failure. Production uses [`RequestPolicy::default`]; tests pass much
+/// shorter durations so they run fast without needing a fake monotonic clock.
 #[derive(Debug, Clone, Copy)]
 pub struct RequestPolicy {
     pub min_interval: Duration,
@@ -75,10 +74,10 @@ impl Default for RequestPolicy {
 }
 
 /// Waits at least `min_interval` between successive [`RateLimiter::throttle`]
-/// calls (spec §7.1's "max 1 request/second, enforced by the client, not by
-/// hope"). `musicbrainz_rs` 0.13.0's own leaky-bucket limiter turns out to be
-/// unreachable through its public feature flags (AGENTS.md) — this replaces
-/// it.
+/// calls. MusicBrainz's policy caps clients at 1 request/second and that has
+/// to be enforced here, not hoped for: `musicbrainz_rs` 0.13.0's own
+/// leaky-bucket limiter turns out to be unreachable through its public
+/// feature flags (AGENTS.md), so this replaces it.
 ///
 /// `wait_duration` is the pure decision (unit-testable without waiting);
 /// `throttle` is the thin async wrapper that actually sleeps.
@@ -172,7 +171,7 @@ impl MusicBrainzClient for RealMusicBrainzClient {
 /// earliest one and total its tracks. Kept separate from that library's own
 /// (large, `Default`-less) `Release` type so [`earliest_release_track_count`]
 /// stays unit-testable with plain hand-built values, the same reasoning as
-/// `SongTags` for MPD (plan §1.2).
+/// `SongTags` for MPD.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReleaseTrackInfo {
     /// MusicBrainz's raw date string (`"1972"`, `"1972-02"`, `"1972-02-14"`
@@ -184,9 +183,9 @@ struct ReleaseTrackInfo {
     track_count: i64,
 }
 
-/// The track count of the earliest release with both a date and media data
-/// (spec §7.3). Releases missing either are excluded, since neither
-/// "earliest" nor "how many tracks" can be determined for them.
+/// The track count of the earliest release. Callers pass only releases
+/// carrying both a date and media data — neither "earliest" nor "how many
+/// tracks" can be determined without them (see [`to_domain`]).
 fn earliest_release_track_count(releases: &[ReleaseTrackInfo]) -> Option<i64> {
     releases
         .iter()

@@ -1,11 +1,14 @@
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-/// Injected time source (plan §1.1) — every write of `first_seen`,
+/// Injected wall-clock time source — every write of `first_seen`,
 /// `last_seen`, `rated_at` or `mb_synced_at` takes an `OffsetDateTime`
 /// explicitly rather than calling `OffsetDateTime::now_utc()` inline, so
-/// callers (including rate-limiting logic in `sync`) are deterministic under
-/// test.
+/// callers are deterministic under test.
+///
+/// `sync`'s rate limiting deliberately does *not* go through this: it wants a
+/// monotonic `std::time::Instant`, a different concern from storage
+/// timestamps.
 pub trait Clock {
     fn now(&self) -> OffsetDateTime;
 }

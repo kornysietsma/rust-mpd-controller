@@ -11,13 +11,20 @@ fn year_of(date: &str) -> &str {
     &date[..date.len().min(4)]
 }
 
-/// Derive `tag_state` for one album directory, per spec §5.4. Recomputed
-/// from scratch on every scan.
+/// Derive `tag_state` for one album directory. Recomputed from scratch on
+/// every scan, which is what lets an album re-tagged in Picard move
+/// `no_mbid_* → clean` with no extra mechanism.
 ///
-/// **Artist variation is explicitly not a signal** (§2.5) — only `Album`,
-/// `AlbumArtist` and year (first four characters of `Date`, ignoring
-/// `'0000'`) are consulted. A compilation with one `AlbumArtist` and many
-/// track `Artist` values is `no_mbid_consistent`, not varied.
+/// Two rules here are counter-intuitive enough to be worth stating (the full
+/// taxonomy and its measured distribution are in `docs/album-database.md`):
+///
+/// - **Artist variation is explicitly not a signal.** Only `Album`,
+///   `AlbumArtist` and year are consulted. A compilation with one
+///   `AlbumArtist` and many track `Artist` values is `no_mbid_consistent`,
+///   not varied.
+/// - **Year is the first four characters of `Date`, and `'0000'` is filtered
+///   out before counting distinct years** — tracks carrying a mix of a real
+///   year and `'0000'` have one year, not two.
 pub fn derive_tag_state(songs: &[SongTags]) -> TagState {
     assert!(
         !songs.is_empty(),
@@ -121,10 +128,9 @@ mod tests {
         assert_eq!(derive_tag_state(&songs), TagState::NoMbidConsistent);
     }
 
-    /// The trap named explicitly in the plan (spec §2.5): many distinct
-    /// track `Artist` values under one `AlbumArtist` and one year is a
-    /// normal compilation, not "varied". Only `Album`/`AlbumArtist`/year
-    /// variation counts.
+    /// The trap this rule exists for: many distinct track `Artist` values
+    /// under one `AlbumArtist` and one year is a normal compilation, not
+    /// "varied". Only `Album`/`AlbumArtist`/year variation counts.
     #[test]
     fn many_artists_with_single_album_artist_and_year_is_consistent_not_varied() {
         let songs: Vec<SongTags> = (0..19)

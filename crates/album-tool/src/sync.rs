@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 
 use crate::musicbrainz::MusicBrainzClient;
 
-/// What one `sync` run did (spec §5.5-style report).
+/// What one `sync` run did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub release_groups_attempted: usize,
@@ -34,15 +34,14 @@ impl fmt::Display for SyncReport {
     }
 }
 
-/// Runs one `sync` pass (spec §7): selects eligible albums, deduplicates by
-/// `mb_release_group_id` (spec §7.1 — 1,830 groups across 1,886 albums),
-/// and fetches each group once via `client`, applying the outcome to every
-/// album that shares it.
+/// Runs one `sync` pass: selects eligible albums, deduplicates by
+/// `mb_release_group_id` (~1,830 groups across 1,886 albums in the real
+/// library, so this is a real saving), and fetches each group once via
+/// `client`, applying the outcome to every album that shares it.
 ///
-/// Every failure is committed as it happens — one `UPDATE` per album, not
-/// one transaction for the whole run — so an interrupted run resumes
-/// exactly where it stopped (spec §7.2) rather than losing progress already
-/// made.
+/// Every outcome is committed as it happens — one `UPDATE` per album, not
+/// one transaction for the whole run — so an interrupted run resumes exactly
+/// where it stopped rather than losing progress already made.
 pub async fn run_sync<C: MusicBrainzClient>(
     conn: &mut Connection,
     client: &C,
@@ -236,7 +235,7 @@ mod tests {
     }
 
     /// Every album sharing a deduplicated release group gets the fetch
-    /// applied, not just the first one requested (spec §7.1).
+    /// applied, not just the first one requested.
     #[tokio::test]
     async fn a_shared_release_group_persists_to_every_album_that_uses_it() {
         let mut conn = open_in_memory().unwrap();
@@ -340,10 +339,10 @@ mod tests {
         assert_eq!(report.release_groups_attempted, 1);
     }
 
-    /// Resumability (spec §7.2): a failure already committed on a previous
-    /// run is never re-requested by a plain re-run, since it's no longer
-    /// `pending`. Simulates "interrupted mid-run" by running twice against
-    /// the same database.
+    /// Resumability: a failure already committed on a previous run is never
+    /// re-requested by a plain re-run, since it's no longer `pending`.
+    /// Simulates "interrupted mid-run" by running twice against the same
+    /// database.
     #[tokio::test]
     async fn a_previously_failed_album_is_not_reattempted_without_force() {
         let mut conn = open_in_memory().unwrap();

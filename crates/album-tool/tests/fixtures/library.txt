@@ -1,4 +1,4 @@
-# Synthetic fixture library for album-tool tests (plan Step 7).
+# Synthetic fixture library for album-tool tests.
 #
 # Every album name, artist name and MBID here is invented — the real
 # library lives under the gitignored album-data/ and is never committed.
@@ -7,7 +7,7 @@
 # `library::FixtureLibrarySource`, which shares the same parser
 # (`mpd_wire::parse_directory_listing`) as the real MPD implementation.
 #
-# Deliberately covers, per plan Step 7:
+# Deliberately covers:
 #   - all six tag_state values (see per-album comments below)
 #   - a Date of '0000' (Quiet Static, Becky's Wedding Edits)
 #   - a multi-disc album with continuous track numbering (Driftwood Choir)
@@ -114,8 +114,9 @@ MUSICBRAINZ_RELEASEGROUPID: rg-cold-marble-skyline-grp
 MUSICBRAINZ_ALBUMARTISTID: artist-cold-static-ensemble
 
 # --- Albums/D/Driftwood Choir/Amber Season -- clean, multi-disc ---
-# Continuous track numbering across two discs, one directory (spec §5.1: no
-# CD1/CD2/ subdirectories).
+# Continuous track numbering across two discs in one directory — the real
+# library has no CD1/CD2/ subdirectories, so disc_count comes from the Disc
+# tag, not the path.
 file: Albums/D/Driftwood Choir/Amber Season/01 - First Light.mp3
 Album: Amber Season
 AlbumArtist: Driftwood Choir
@@ -227,7 +228,7 @@ MUSICBRAINZ_RELEASEGROUPID: rg-faded-low-tide-grp
 MUSICBRAINZ_ALBUMARTISTID: artist-faded-static
 
 # --- Albums/M/Mixed Signals Duo/Paper Tigers -- mixed_mbid ---
-# Every track has an MBID, but they disagree (spec §5.4).
+# Every track has an MBID, but they disagree -> mixed_mbid.
 file: Albums/M/Mixed Signals Duo/Paper Tigers/01 - Paper Tigers.mp3
 Album: Paper Tigers
 AlbumArtist: Mixed Signals Duo
@@ -253,7 +254,7 @@ MUSICBRAINZ_RELEASEGROUPID: rg-mixed-paper-tigers-grp
 MUSICBRAINZ_ALBUMARTISTID: artist-mixed-signals-duo
 
 # --- Albums/P/Pale Harbor/Winter Static -- partial_mbid ---
-# Some tracks have an MBID, some don't (spec §5.4).
+# Some tracks have an MBID, some don't -> partial_mbid.
 file: Albums/P/Pale Harbor/Winter Static/01 - Frostline.mp3
 Album: Winter Static
 AlbumArtist: Pale Harbor
@@ -368,8 +369,8 @@ Date: 2018
 
 # --- Compilations/Faded Neon Nights -- no_mbid_consistent ---
 # Many distinct track Artist values under one AlbumArtist and one year: a
-# normal compilation, not "varied" (spec §2.5 — artist variation is not a
-# signal).
+# normal compilation -> no_mbid_consistent, not "varied". Artist variation is
+# deliberately not a signal.
 file: Compilations/Faded Neon Nights/01 - Skyline Runner.mp3
 Album: Faded Neon Nights
 AlbumArtist: Various Artists
@@ -398,8 +399,8 @@ Date: 1999
 Genre: Synthwave
 
 # --- Compilations/A Midnight Call for the '90s Kids -- clean, apostrophe path ---
-# Real path shape that broke the first quoting attempt (spec §2.7), with
-# invented content.
+# Real path shape that broke the first quoting attempt (an apostrophe needs
+# escaping at both the filter and protocol levels), with invented content.
 file: Compilations/A Midnight Call for the '90s Kids/01 - Broadcast.mp3
 Album: A Midnight Call for the '90s Kids
 AlbumArtist: Various Artists
@@ -480,8 +481,8 @@ Track: 2
 Date: 0000
 
 # --- Unnmatched/Static Interference Radio Hour -- clean ---
-# Unnmatched/<album> pattern, but tagged: tag_state transitions to clean
-# regardless of the loose top-level path (spec §5.4).
+# Unnmatched/<album> pattern, but tagged: tag_state is clean regardless of
+# the loose top-level path — the path only matters once tags are untrusted.
 file: Unnmatched/Static Interference Radio Hour/01 - Opening Static.mp3
 Album: Static Interference Radio Hour
 AlbumArtist: Various Artists

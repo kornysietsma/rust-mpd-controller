@@ -8,10 +8,11 @@ use albumdb::{
 };
 use anyhow::{Context, Result};
 
-/// One album directory's derived facts plus its file-tag genre (spec §5.3),
-/// as pure a function of `Vec<SongTags>` as `derive_tag_state` itself. No
-/// reconciliation against existing rows here — that's Step 9; every scan is
-/// treated as a first scan.
+/// One album directory's derived facts plus its file-tag genre, as pure a
+/// function of `Vec<SongTags>` as `derive_tag_state` itself. Reconciliation
+/// against existing rows is deliberately *not* done here — that belongs to
+/// [`compute_report`] / [`write_albums`], so grouping stays pure and every
+/// scan can be derived as though it were the first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumGroup {
     pub facts: AlbumFacts,
@@ -19,8 +20,8 @@ pub struct AlbumGroup {
 }
 
 /// Groups songs by their containing directory and derives one [`AlbumGroup`]
-/// per album (spec §5.1–§5.4). Pure — no I/O — so it's directly unit
-/// testable with hand-built `SongTags`.
+/// per album. Pure — no I/O — so it's directly unit testable with hand-built
+/// `SongTags`.
 pub fn group_into_albums(songs: Vec<SongTags>) -> Result<Vec<AlbumGroup>> {
     let mut groups: BTreeMap<String, Vec<SongTags>> = BTreeMap::new();
     for song in songs {
@@ -47,11 +48,11 @@ fn present(value: &Option<String>) -> Option<&str> {
 }
 
 /// Builds the facts for one album directory. Where tracks disagree on a
-/// scalar field (only possible in `mixed_mbid`/`partial_mbid`, 3 albums
-/// total in the real library, spec §2.1) the first non-empty value in
-/// path-sorted order wins — those states are already flagged for manual
-/// fixing in Picard (spec §8), so this value is never authoritative, only a
-/// placeholder until a human resolves it.
+/// scalar field (only possible in `mixed_mbid`/`partial_mbid` — 3 albums
+/// total in the real library) the first non-empty value in path-sorted order
+/// wins. `album-tool status` already flags those two states for manual
+/// fixing in Picard, so the value is never authoritative, only a placeholder
+/// until a human resolves it.
 fn build_album_group(path: String, mut songs: Vec<SongTags>) -> Result<AlbumGroup> {
     songs.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -134,7 +135,7 @@ fn build_album_group(path: String, mut songs: Vec<SongTags>) -> Result<AlbumGrou
     })
 }
 
-/// Which paths a scan would add, update, or find missing (spec §5.2, §5.5):
+/// Which paths a scan would add, update, or find missing:
 /// `added` are paths with no existing row at all, `updated` are paths that
 /// already had a row (present or missing) and were seen again in MPD, and
 /// `newly_missing` are paths that were `status = 'present'` before this scan
@@ -211,10 +212,10 @@ pub fn compute_report(conn: &Connection, groups: &[AlbumGroup]) -> Result<ScanRe
 
 /// Writes every group via `upsert_album`, then replaces its `source = 'tag'`
 /// genre row (or clears it, if the album now has no tag genre — keeps a
-/// re-scan idempotent). Also reconciles the other direction (spec §5.2):
-/// any album still `status = 'present'` from a previous scan but absent from
-/// `groups` is marked `missing`, never deleted. Returns the diff computed by
-/// [`compute_report`].
+/// re-scan idempotent). Also reconciles the other direction: any album still
+/// `status = 'present'` from a previous scan but absent from `groups` is
+/// marked `missing`, **never deleted** — deleting would silently discard a
+/// rating. Returns the diff computed by [`compute_report`].
 pub fn write_albums(
     conn: &mut Connection,
     groups: &[AlbumGroup],
@@ -250,8 +251,8 @@ pub fn write_albums(
     Ok(report)
 }
 
-/// Counts of albums per `tag_state`, in the order spec §5.4's table lists
-/// them.
+/// Counts of albums per `tag_state`, in the order `docs/album-database.md`'s
+/// table lists them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TagStateCounts {
     pub clean: usize,
@@ -314,7 +315,7 @@ mod tests {
     fn groups_the_fixture_into_the_expected_tag_states() {
         let groups = group_into_albums(fixture_songs()).unwrap();
 
-        // 20 albums per the fixture's own header comment (plan Step 7).
+        // 20 albums, per the fixture's own header comment.
         assert_eq!(groups.len(), 20);
 
         let counts = TagStateCounts::from_groups(&groups);
@@ -451,7 +452,7 @@ mod tests {
     }
 
     /// Drops one album out of the fixture entirely, simulating a directory
-    /// that vanished from MPD (plan Step 9).
+    /// that vanished from MPD.
     fn without_glass_horizon() -> Vec<SongTags> {
         fixture_songs()
             .into_iter()
@@ -488,7 +489,7 @@ mod tests {
         assert_eq!(missing.status.as_str(), "missing");
         assert_eq!(missing.rating, Some(5));
         // `last_seen` records "last seen present" — going missing must not
-        // touch it (spec §5.2).
+        // touch it.
         assert_eq!(missing.last_seen, "2026-08-06T00:00:00Z");
     }
 
@@ -576,9 +577,9 @@ mod tests {
         let report =
             write_albums(&mut conn, &group_into_albums(renamed).unwrap(), &clock2).unwrap();
 
-        // Deliberately not auto-matched (spec §5.2, §9): a rename produces
-        // one new unrated row and one missing row that keeps its rating,
-        // visible side by side in the report rather than silently merged.
+        // Deliberately not auto-matched: a rename produces one new unrated
+        // row and one missing row that keeps its rating, visible side by side
+        // in the report rather than silently merged.
         assert_eq!(
             report.added,
             vec!["Albums/A/Aurora Fields/Glass Horizon (Remastered)".to_string()]

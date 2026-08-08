@@ -3,7 +3,7 @@ use albumdb::SongTags;
 /// Builds a `find`/`lsinfo`-style `(base '<path>')` filter clause, escaping
 /// `path` for MPD's filter-expression single-quoted string syntax.
 ///
-/// This is the *inner* level of spec §2.7's two-level quoting: the escaped
+/// This is the *inner* level of MPD's two-level quoting: the escaped
 /// clause is then handed to `RawCommand::argument`, which applies the
 /// *outer* protocol-level escaping (backslash-escaping `'`, `"`, `\`, and
 /// wrapping the whole argument in double quotes because album paths contain
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn base_filter_escapes_apostrophe() {
-        // The real path that broke the first attempt (spec §2.7).
+        // The real path shape that broke the first quoting attempt.
         assert_eq!(
             base_filter("A Wake-Up Call for the '90s"),
             r"(base 'A Wake-Up Call for the \'90s')"

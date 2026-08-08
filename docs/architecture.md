@@ -1,10 +1,22 @@
 # How it works
 
-One binary, one long-running process, one crate. Both entry points — the menu
-bar and the URL scheme — are handled inside the same process, which owns the
-MPD connection and any future in-memory state.
+A Cargo workspace of three crates:
 
-| Module             | Responsibility                                         |
+| Crate | Responsibility |
+|---|---|
+| `crates/controller` | the menu-bar app and `mpdcontrol://` URL scheme — everything below |
+| `crates/albumdb` | SQLite album database: schema, domain types, pure derivation logic |
+| `crates/album-tool` | the `scan`/`sync`/`status` CLI that maintains it |
+
+The two halves are independent — `controller` doesn't depend on `albumdb`. For
+the album side see [album-database.md](album-database.md); the rest of this
+document is about `controller`.
+
+One binary, one long-running process. Both entry points — the menu bar and the
+URL scheme — are handled inside the same process, which owns the MPD
+connection and any future in-memory state.
+
+| Module (under `crates/controller/`) | Responsibility          |
 |--------------------|--------------------------------------------------------|
 | `src/main.rs`      | startup, `tao` event loop, tray icon + menu, URL handling |
 | `src/mpd.rs`       | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |

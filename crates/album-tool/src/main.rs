@@ -81,9 +81,10 @@ fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
     Ok(conf.music_directory.join(DB_FILENAME))
 }
 
-/// `mpd_host` is hardcoded to `localhost` (spec §4.1); the port still comes
-/// from `mpd.conf`. Independent of `--db-path`, which bypasses only the
-/// database *path* derivation — `scan` always needs to reach MPD itself.
+/// `mpd_host` is hardcoded to `localhost` — reading `mpd.conf` off the local
+/// filesystem already establishes that MPD is local. The port still comes
+/// from `mpd.conf`, independent of `--db-path`, which bypasses only the
+/// database *path* derivation: `scan` always needs to reach MPD itself.
 fn resolve_mpd_port(cli: &Cli) -> Result<u16> {
     Ok(mpd_conf::load(&mpd_conf_path(cli)?)?.port)
 }

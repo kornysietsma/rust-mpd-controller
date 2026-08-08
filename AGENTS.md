@@ -1,16 +1,48 @@
 # Agent notes
 
-A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. Complete
-and in daily use: playback controls, album traversal, playlist membership and
-"Add to", copy-URI rows for the current track and album, plus the URL scheme. See `README.md` for architecture and usage, and
-`docs/implementation-details.md` for the non-obvious details behind it —
-including the measured evidence behind the album-grouping and run-length
-rules, which should not be re-derived or "tuned" without re-measuring.
+A Cargo workspace with three crates:
+
+- `crates/controller` — a macOS menu-bar MPD controller plus an `mpdcontrol://`
+  URL scheme. Complete and in daily use: playback controls, album traversal,
+  playlist membership and "Add to", copy-URI rows for the current track and
+  album, plus the URL scheme.
+- `crates/albumdb` — the SQLite album database: schema, domain types, and all
+  the pure derivation logic.
+- `crates/album-tool` — the `scan`/`sync`/`status` CLI that maintains it.
+
+See `README.md` for architecture and usage, `docs/implementation-details.md`
+for the non-obvious details behind the controller — including the measured
+evidence behind the album-grouping and run-length rules, which should not be
+re-derived or "tuned" without re-measuring — and `docs/album-database.md` for
+the same for the album database.
 
 Scope is deliberately personal-tool-sized: prefer simple working code over
 exhaustive coverage, and don't design in speculative complexity. Ideas that
 were explicitly deferred are in `docs/future_expansions.md` — check there
 before proposing "obvious" additions.
+
+## Don't cite `spec.md` / `plan.md` from code
+
+Those are **working documents, deleted when an epic completes.** It has
+happened twice already, and `controller/src/menu.rs` and `mpd.rs` carried
+dangling "spec §7.1" / "spec §3" references to long-dead specs for months
+because of it.
+
+A comment must stand on its own. Either state the fact inline, or cite a file
+under `docs/` — never a section number in a document that won't outlive the
+branch.
+
+## Quality gates
+
+No CI in this repo — run all three by hand before calling any work done:
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Default rustfmt/clippy settings; no config file for either, deliberately.
 
 ## Verifying GUI/tray state
 
@@ -91,7 +123,8 @@ Known gotchas already found this way, so you don't have to re-derive them:
   `execute_with_client_async`. `ReleaseGroup::fetch().with_genres()` populates
   `genres: Option<Vec<Genre>>` with vote counts on `Genre.count`, and
   `.with_releases()` populates `releases: Option<Vec<Release>>` — both
-  confirmed live, matching spec §2.2's numbers exactly.
+  confirmed live, matching the genre counts in `docs/album-database.md`
+  exactly.
 - **`musicbrainz_rs` 0.13.0's built-in rate limiter is unreachable from the
   outside — don't rely on it.** Its `rate_limit` feature enables `dep:governor`
   but never actually uses it (confirmed: no `governor` reference anywhere in
@@ -117,7 +150,7 @@ Known gotchas already found this way, so you don't have to re-derive them:
   rolls all three as `Command` impls (same pattern as `controller`'s
   `AddRecursive`/`ListPlaylist`), and `album-tool/src/mpd_wire.rs` builds the
   `base` filter clause by hand. Its inner escaping (backslash then
-  apostrophe, spec §2.7) only needs to handle `\`/`'` — the *outer*
+  apostrophe) only needs to handle `\`/`'` — the *outer*
   protocol-level escaping (backslash-escaping `'`/`"`/`\`, wrapping in double
   quotes because paths contain spaces) is applied automatically by
   `mpd_protocol::command::escape_argument` once the clause is passed through

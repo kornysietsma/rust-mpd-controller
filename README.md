@@ -42,13 +42,29 @@ And it also implements a URI scheme so if you click a carefully crafted URI like
 - [docs/implementation-details.md](docs/implementation-details.md) — the
   non-obvious things that took real digging (macOS URL-scheme quirks, Dock
   icon, `PATH` under Launch Services, library sharp edges).
+- [docs/album-database.md](docs/album-database.md) — the SQLite album database
+  and the `album-tool` CLI that maintains it.
 - [docs/future_expansions.md](docs/future_expansions.md) — deferred ideas and
   deliberate non-goals.
 
+## The album database
+
+Alongside the menu-bar app, this repo holds `album-tool` — a CLI that builds a
+SQLite database of every album in the MPD library, combining file tags,
+MusicBrainz genre data, and hand-entered ratings and category flags. It's
+queried by hand in SQL and by agent skills; the menu-bar app doesn't read it
+yet. See [docs/album-database.md](docs/album-database.md).
+
+```
+album-tool scan [--dry-run]     # read MPD, update the database
+album-tool sync [--limit N]     # fetch MusicBrainz release-group data
+album-tool status               # read-only report
+```
+
 ## How it works
 
-One binary, one long-running process, one crate: the menu bar and the URL
-scheme are handled inside the same process, which owns the MPD connection.
+One binary, one long-running process: the menu bar and the URL scheme are
+handled inside the same process, which owns the MPD connection.
 The main thread runs the tray icon and menu (`tao`/`muda`), while a background
 tokio task holds the MPD connection and pushes state changes across on every
 `idle` notification — see [docs/architecture.md](docs/architecture.md) for
@@ -69,7 +85,7 @@ the module breakdown and a diagram of the threading model.
 ./install.sh
 ```
 
-This runs `cargo bundle --release` and copies `MpdController.app` into
+This runs `cargo bundle --release -p controller` and copies `MpdController.app` into
 `/Applications`. macOS only honours the `mpdcontrol://` URL scheme
 registration for apps living in `/Applications`, and only after the app has
 been launched at least once — so after installing, launch it once from

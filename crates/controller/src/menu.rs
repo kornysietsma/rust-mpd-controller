@@ -579,9 +579,9 @@ mod tests {
 
     #[test]
     fn track_title_paused_prefix_sits_outside_the_truncation_budget() {
-        // Spec §7.1: the glyph is prepended *after* truncation, so text is cut
-        // at exactly the same point whether paused or playing. Checked at the
-        // budget boundary and well past it.
+        // The glyph is prepended *after* truncation, so text is cut at exactly
+        // the same point whether paused or playing. Checked at the budget
+        // boundary and well past it.
         for title in [&"a".repeat(TITLE_MAX_CHARS), &"a".repeat(40)] {
             let playing = track_title(PlayState::Playing, Some(title), "foo.mp3", &[]);
             let paused = track_title(PlayState::Paused, Some(title), "foo.mp3", &[]);

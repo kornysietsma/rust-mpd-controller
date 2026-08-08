@@ -1,6 +1,5 @@
 /// Normalise a `Date`/`OriginalDate` tag value: blank or the junk year
-/// `'0000'` (spec §2.5) become `None`, everything else passes through
-/// unchanged.
+/// `'0000'` become `None`, everything else passes through unchanged.
 pub fn normalise_date(date: Option<&str>) -> Option<String> {
     let trimmed = date?.trim();
     if trimmed.is_empty() || trimmed == "0000" {

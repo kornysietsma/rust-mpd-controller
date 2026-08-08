@@ -30,9 +30,9 @@ pub struct PlaylistCache {
     /// song URL -> sorted playlist names containing it.
     pub membership: HashMap<String, Vec<String>>,
     /// Every playlist name MPD reported, whether or not it currently
-    /// contains any songs. Used to validate `key_playlists` entries (spec
-    /// §3) — `membership`'s keys alone can't distinguish "playlist doesn't
-    /// exist" from "playlist exists but is empty".
+    /// contains any songs. Used to validate configured `key_playlists`
+    /// entries — `membership`'s keys alone can't distinguish "playlist
+    /// doesn't exist" from "playlist exists but is empty".
     pub names: Vec<String>,
 }
 

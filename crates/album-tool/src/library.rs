@@ -14,27 +14,25 @@ use tokio::net::TcpStream;
 
 use crate::mpd_wire::{DirListing, base_filter, parse_directory_listing};
 
-/// Produces the full set of song tags backing the album database (spec §1.2
-/// / plan §1.2–1.3): the MPD I/O layer's only job. Everything downstream —
-/// grouping into albums, `tag_state`, title/artist resolution — is a pure
-/// function over the `Vec<SongTags>` this returns.
+/// Produces the full set of song tags backing the album database: the MPD I/O
+/// layer's only job. Everything downstream — grouping into albums,
+/// `tag_state`, title/artist resolution — is a pure function over the
+/// `Vec<SongTags>` this returns.
 ///
 /// Deliberately synchronous: `mpd_client`'s async API is real, but nothing
 /// about reading the library benefits from being async at this trait
 /// boundary — it's one batch read, not a long-lived connection. The real
-/// implementation owns a private Tokio runtime for the duration of the
-/// call. `sync`'s `MusicBrainzClient` (plan §1.3) is async instead, since
-/// its rate-limited, request-per-album loop is a much more natural fit for
-/// it.
+/// implementation owns a private Tokio runtime for the duration of the call.
+/// `sync`'s `MusicBrainzClient` is async instead, since its rate-limited,
+/// request-per-album loop is a much more natural fit for it.
 pub trait LibrarySource {
     fn songs(&self) -> Result<Vec<SongTags>>;
 }
 
-/// Reads the MPD library over TCP, honouring spec §2.7/§5.1's findings:
-/// `find "(base '')"` over the whole library returns zero rows (response
-/// too large), so the walk is chunked — `listfiles` for top-level
-/// directories, `lsinfo` per top-level directory for chunk boundaries, then
-/// `find "(base '<chunk>')"` per chunk.
+/// Reads the MPD library over TCP. `find "(base '')"` over the whole library
+/// returns zero rows — the response is too large — so the walk is chunked:
+/// `listfiles` for top-level directories, `lsinfo` per top-level directory
+/// for chunk boundaries, then `find "(base '<chunk>')"` per chunk.
 pub struct MpdLibrarySource {
     host: String,
     port: u16,
@@ -106,8 +104,8 @@ impl LibrarySource for MpdLibrarySource {
 }
 
 /// `listfiles` with no argument — top-level directories. `lsinfo`/
-/// `listallinfo` with no argument return zero rows and drop the connection
-/// (spec §2.7); `listfiles` is the one that actually works here.
+/// `listallinfo` with no argument return zero rows and then drop the
+/// connection; `listfiles` is the one that actually works here.
 ///
 /// Only `directory` entries are kept. `listfiles` is a raw filesystem
 /// browse rather than a database query — it lists `file` entries with no
@@ -172,10 +170,10 @@ impl MpdCommand for FindBase<'_> {
 }
 
 /// Reads a committed fixture file instead of a live MPD server — the
-/// substitute this crate's traits exist to allow (plan §1.2/§1.3). The file
-/// uses the same `key: value` line shape MPD's own protocol uses, with a
-/// blank line between songs, so [`parse_directory_listing`] (shared with the
-/// real implementation) can parse it unchanged.
+/// substitute this trait exists to allow. The file uses the same
+/// `key: value` line shape MPD's own protocol uses, with a blank line between
+/// songs, so [`parse_directory_listing`] (shared with the real
+/// implementation) can parse it unchanged.
 ///
 /// Test-only (like `albumdb::song_tags::song`): nothing in `album-tool`
 /// itself ever reads a fixture outside `cargo test`.

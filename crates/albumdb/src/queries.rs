@@ -12,16 +12,17 @@ use crate::track_range::TrackRange;
 /// Writes **only** the derived columns carried by `AlbumFacts`, plus
 /// `status` (always set to `present` — a row that exists in MPD is by
 /// definition present) and `first_seen`/`last_seen`. Every user-editable
-/// column (§4.2) is absent from both the `INSERT` column list and the
-/// `ON CONFLICT` `SET` clause, so it is structurally impossible for this
-/// function to touch them: a fresh row gets their schema defaults, an
-/// existing row keeps whatever a person put there. Returns the `album_id`.
+/// column is absent from both the `INSERT` column list and the `ON CONFLICT`
+/// `SET` clause, so it is structurally impossible for this function to touch
+/// them: a fresh row gets their schema defaults, an existing row keeps
+/// whatever a person put there. **Keep that property when extending this.**
+/// Returns the `album_id`.
 ///
 /// `title`/`artist`/`title_source` are the one exception written here that
 /// still needs a guard: if the existing row's `title_source` is already
-/// `'manual'`, a scan must never overwrite a hand-entered title (spec
-/// §5.3), so those three columns fall back to their current value in that
-/// case via `CASE WHEN`.
+/// `'manual'`, a scan must never overwrite a hand-entered title, so those
+/// three columns fall back to their current value in that case via
+/// `CASE WHEN`.
 pub fn upsert_album(conn: &Connection, facts: &AlbumFacts, now: OffsetDateTime) -> Result<i64> {
     let now = format_timestamp(now);
     conn.query_row(
@@ -108,7 +109,7 @@ pub fn all_albums(conn: &Connection) -> Result<Vec<Album>> {
 }
 
 /// Mark an album as no longer found in MPD. Never deletes the row — that
-/// would silently discard a rating (spec §5.2). Does not touch `last_seen`:
+/// would silently discard a rating. Does not touch `last_seen`:
 /// that column records when the album was last *present*, and a directory
 /// going missing is the opposite of that.
 pub fn mark_missing(conn: &Connection, album_id: i64) -> Result<()> {
@@ -160,7 +161,7 @@ fn replace_genres_tx(
 /// Replace every `album_genres` row for `album_id` from the given `source`
 /// with `genres`. Rows from the *other* source are untouched — a `sync` run
 /// replacing `mb` genres never disturbs the `tag` genre written by `scan`,
-/// and vice versa (spec §7.3).
+/// and vice versa.
 pub fn replace_genres(
     conn: &mut Connection,
     album_id: i64,
@@ -173,15 +174,15 @@ pub fn replace_genres(
     Ok(())
 }
 
-/// Records a successful `sync` fetch (spec §7.3): replaces the album's `mb`
-/// genres, caches `primary_genre` (the highest-voted one), writes
+/// Records a successful `sync` fetch: replaces the album's `mb` genres,
+/// caches `primary_genre` (the highest-voted one), writes
 /// `mb_original_count`, and marks the row `ok` — all in one transaction, so
 /// a row is never observably `ok` without the genre data that justifies it.
 ///
 /// When `mb_original_count` is known and `original_tracks` is still `NULL`,
 /// also sets `original_tracks = '1-<n>'` with `original_tracks_src = 'mb'`.
 /// An already-set value — `manual` or a previous `sync`'s own `mb` value —
-/// is never overwritten (spec §7.3).
+/// is never overwritten.
 pub fn set_sync_ok(
     conn: &mut Connection,
     album_id: i64,
@@ -286,8 +287,8 @@ pub fn set_is_soundtrack(conn: &Connection, album_id: i64, value: bool) -> Resul
 
 /// Set `original_tracks` by hand. Always stamps `original_tracks_src =
 /// 'manual'` — the one exception, `sync` filling in an MB-derived range when
-/// the column is still unset, is `sync`'s own narrow write path (spec
-/// §7.3), not this general setter.
+/// the column is still unset, is [`set_sync_ok`]'s own narrow write path,
+/// not this general setter.
 pub fn set_original_tracks(
     conn: &Connection,
     album_id: i64,
@@ -310,7 +311,7 @@ pub fn set_match_policy(conn: &Connection, album_id: i64, policy: MatchPolicy) -
     Ok(())
 }
 
-/// Albums eligible for `sync` (spec §7.1): present, not opted out via
+/// Albums eligible for `sync`: present, not opted out via
 /// `match_policy = 'never'`, and carrying a release-group MBID to look up.
 ///
 /// Without `force`, only `mb_sync_state = 'pending'` rows are selected — a
@@ -334,9 +335,9 @@ pub fn pending_sync_albums(conn: &Connection, force: bool) -> Result<Vec<Album>>
         .context("failed to read a pending-sync album row")
 }
 
-/// Record a failed sync attempt (spec §7.2): a 404 (stale MBID) or a
-/// give-up after retries are exhausted. Never leaves the row `pending` — a
-/// re-run without `--force` will not retry it.
+/// Record a failed sync attempt: a 404 (stale MBID) or a give-up after
+/// retries are exhausted. Never leaves the row `pending` — a re-run without
+/// `--force` will not retry it.
 pub fn set_sync_failed(
     conn: &Connection,
     album_id: i64,
@@ -396,9 +397,9 @@ mod tests {
         assert_eq!(album.tag_state, TagState::Clean);
     }
 
-    /// The load-bearing invariant (plan Step 5): every user-editable column
-    /// must survive a re-`upsert_album` with completely different derived
-    /// data, whether the row started present or missing.
+    /// The load-bearing invariant: every user-editable column must survive a
+    /// re-`upsert_album` with completely different derived data, whether the
+    /// row started present or missing.
     #[test]
     fn upsert_never_touches_user_editable_columns() {
         let conn = open_in_memory().unwrap();
@@ -455,11 +456,10 @@ mod tests {
         assert_eq!(after.first_seen, before.first_seen);
     }
 
-    /// Spec §5.3: a hand-entered title survives a scan. `title_source =
-    /// 'manual'` is not itself user-editable in the schema's "never
-    /// machine-written" sense (it's set by a future manual-edit command, not
-    /// listed under §4.2's user-editable block), but the same non-negotiable
-    /// invariant applies to it once set.
+    /// A hand-entered title survives a scan. `title_source = 'manual'` is not
+    /// itself user-editable in the schema's "never machine-written" sense
+    /// (it's set by a future manual-edit command, not by a person editing the
+    /// row), but the same non-negotiable invariant applies to it once set.
     #[test]
     fn upsert_never_overwrites_a_manual_title() {
         let conn = open_in_memory().unwrap();

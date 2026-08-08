@@ -38,7 +38,7 @@ impl fmt::Display for SyncStateCounts {
     }
 }
 
-/// Read-only report over the current database state (spec §8). Every list is
+/// Read-only report over the current database state. Every list is
 /// path-sorted for stable output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusReport {

@@ -6,7 +6,8 @@ use crate::enums::{AlbumStatus, MatchPolicy, SyncState, TagState, TitleSource, V
 
 /// The derived facts a `scan` produces for one album directory — everything
 /// `upsert_album` writes. Deliberately excludes every user-editable column
-/// (§4.2): `upsert_album` must be structurally unable to touch them.
+/// (`rating`, `notes`, the category flags, ...): `upsert_album` must be
+/// structurally unable to touch them. See `docs/album-database.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumFacts {
     pub path: String,

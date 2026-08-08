@@ -1,5 +1,5 @@
 /// Derive `(title, artist)` from an album directory path when tags aren't
-/// trustworthy enough to use, per spec §5.3.
+/// trustworthy enough to use — see `docs/album-database.md`.
 ///
 /// | Pattern | title | artist |
 /// |---|---|---|
