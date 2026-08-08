@@ -245,6 +245,47 @@ pub fn set_match_policy(conn: &Connection, album_id: i64, policy: MatchPolicy) -
     Ok(())
 }
 
+/// Albums eligible for `sync` (spec §7.1): present, not opted out via
+/// `match_policy = 'never'`, and carrying a release-group MBID to look up.
+///
+/// Without `force`, only `mb_sync_state = 'pending'` rows are selected — a
+/// `failed` row (a stale MBID needing a Picard fix, or a give-up after
+/// retries) is never silently retried. `force` widens that to `ok` and
+/// `failed` too, so a forced run re-attempts everything eligible regardless
+/// of its last outcome.
+pub fn pending_sync_albums(conn: &Connection, force: bool) -> Result<Vec<Album>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM albums
+         WHERE status = 'present'
+           AND match_policy != 'never'
+           AND mb_release_group_id IS NOT NULL
+           AND (mb_sync_state = 'pending' OR (:force AND mb_sync_state IN ('ok', 'failed')))
+         ORDER BY path",
+    )?;
+    let rows = stmt
+        .query_map(named_params! { ":force": force }, Album::from_row)
+        .context("failed to query albums pending sync")?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read a pending-sync album row")
+}
+
+/// Record a failed sync attempt (spec §7.2): a 404 (stale MBID) or a
+/// give-up after retries are exhausted. Never leaves the row `pending` — a
+/// re-run without `--force` will not retry it.
+pub fn set_sync_failed(
+    conn: &Connection,
+    album_id: i64,
+    error: &str,
+    now: OffsetDateTime,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE albums SET mb_sync_state = 'failed', mb_sync_error = ?1, mb_synced_at = ?2 WHERE album_id = ?3",
+        params![error, format_timestamp(now), album_id],
+    )
+    .with_context(|| format!("failed to record sync failure for album {album_id}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +575,70 @@ mod tests {
             .unwrap();
         assert_eq!(album.original_tracks.as_deref(), Some("1-10"));
         assert_eq!(album.original_tracks_src.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn pending_sync_albums_excludes_missing_never_and_no_release_group() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+
+        let eligible = upsert_album(&conn, &facts("Albums/A/Artist/Eligible"), now).unwrap();
+
+        let missing = upsert_album(&conn, &facts("Albums/B/Artist/Missing"), now).unwrap();
+        mark_missing(&conn, missing).unwrap();
+
+        let never = upsert_album(&conn, &facts("Albums/C/Artist/Never"), now).unwrap();
+        set_match_policy(&conn, never, MatchPolicy::Never).unwrap();
+
+        let mut no_group_facts = facts("Albums/D/Artist/NoGroup");
+        no_group_facts.mb_release_group_id = None;
+        upsert_album(&conn, &no_group_facts, now).unwrap();
+
+        let pending = pending_sync_albums(&conn, false).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].album_id, eligible);
+    }
+
+    #[test]
+    fn pending_sync_albums_without_force_excludes_ok_and_failed() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+
+        let still_pending = upsert_album(&conn, &facts("Albums/A/Artist/Pending"), now).unwrap();
+        let ok = upsert_album(&conn, &facts("Albums/B/Artist/Ok"), now).unwrap();
+        conn.execute(
+            "UPDATE albums SET mb_sync_state = 'ok' WHERE album_id = ?1",
+            params![ok],
+        )
+        .unwrap();
+        let failed = upsert_album(&conn, &facts("Albums/C/Artist/Failed"), now).unwrap();
+        set_sync_failed(&conn, failed, "boom", now).unwrap();
+
+        let pending = pending_sync_albums(&conn, false).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].album_id, still_pending);
+
+        let forced = pending_sync_albums(&conn, true).unwrap();
+        let forced_ids: Vec<i64> = forced.iter().map(|a| a.album_id).collect();
+        assert_eq!(forced_ids.len(), 3);
+        assert!(forced_ids.contains(&still_pending));
+        assert!(forced_ids.contains(&ok));
+        assert!(forced_ids.contains(&failed));
+    }
+
+    #[test]
+    fn set_sync_failed_records_state_error_and_timestamp() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+
+        set_sync_failed(&conn, album_id, "404: not found", now).unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert_eq!(album.mb_sync_state.as_str(), "failed");
+        assert_eq!(album.mb_sync_error.as_deref(), Some("404: not found"));
+        assert_eq!(album.mb_synced_at.as_deref(), Some("2026-08-05T00:00:00Z"));
     }
 }

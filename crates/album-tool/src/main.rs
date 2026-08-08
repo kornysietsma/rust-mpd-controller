@@ -2,12 +2,14 @@ mod cli;
 mod library;
 mod mpd_conf;
 mod mpd_wire;
+mod musicbrainz;
 mod scan;
 mod status;
+mod sync;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use cli::{Cli, Command};
@@ -44,10 +46,20 @@ fn main() -> Result<()> {
             println!("{counts}");
         }
         Command::Sync { limit, force } => {
-            println!(
-                "sync: not yet implemented (db_path={}, limit={limit:?}, force={force})",
-                db_path.display()
-            );
+            let conn = albumdb::open(&db_path)?;
+            let client = musicbrainz::RealMusicBrainzClient::new(musicbrainz::RequestPolicy::default());
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("failed to start async runtime for MusicBrainz requests")?;
+            let report = runtime.block_on(sync::run_sync(
+                &conn,
+                &client,
+                limit,
+                force,
+                &albumdb::SystemClock,
+            ))?;
+            println!("{report}");
         }
         Command::Status => {
             let conn = albumdb::open(&db_path)?;

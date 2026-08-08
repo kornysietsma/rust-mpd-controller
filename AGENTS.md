@@ -91,11 +91,25 @@ Known gotchas already found this way, so you don't have to re-derive them:
   `execute_with_client_async`. `ReleaseGroup::fetch().with_genres()` populates
   `genres: Option<Vec<Genre>>` with vote counts on `Genre.count`, and
   `.with_releases()` populates `releases: Option<Vec<Release>>` — both
-  confirmed live, matching spec §2.2's numbers exactly. The client also ships
-  its own leaky-bucket rate limiter (5-request burst, 1/s replenishment) via
-  `api_bindium` — relevant to the "max 1 request/s" rule in spec §7.1, still
-  to be decided when building `sync`: rely on it, or wrap it with the injected
-  `Clock` for deterministic tests.
+  confirmed live, matching spec §2.2's numbers exactly.
+- **`musicbrainz_rs` 0.13.0's built-in rate limiter is unreachable from the
+  outside — don't rely on it.** Its `rate_limit` feature enables `dep:governor`
+  but never actually uses it (confirmed: no `governor` reference anywhere in
+  the crate's source), and never forwards to `api_bindium`'s own `rate_limit`
+  feature — the thing that actually gates `client.await_rate_limit()` inside
+  `try_send_request_async`. So there is no way, through any combination of
+  public feature flags, to turn on real MusicBrainz-side rate limiting.
+  `album-tool/src/musicbrainz.rs`'s `RateLimiter` (own `Mutex<Option<Instant>>`
+  + `min_interval`) replaces it — resolves the "still to be decided" note this
+  entry used to carry. Separately, the crate *does* auto-retry a bare `503`
+  internally (unconditionally, not behind a feature — default `max_retries =
+  10`, using the response's `Retry-After` header if present else its own
+  backoff formula), but **not** other `5xx` statuses — those return a single
+  `Err` on first failure, which is why `RealMusicBrainzClient` wraps its own
+  outer retry/backoff loop (`backoff_duration`) around the whole call. `404`
+  is detectable cleanly via
+  `err.as_musicbrainz_error().is_some_and(|e| e.is_not_found())`, without
+  needing the raw HTTP status at all.
 - `mpd_client` 1.4.1's `filter::Filter` type only supports tag comparisons
   (`Filter::tag`, `Filter::new(tag, operator, value)`) — there is no `base`
   variant, so it can't express `(base '<path>')`. There's also no typed

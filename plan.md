@@ -561,32 +561,85 @@ is all `pending`, as expected before `sync` exists.
 
 ---
 
-### Step 12 — `sync`: transport
+### Step 12 — `sync`: transport — DONE
 
-Transport and discipline only; persistence is step 13.
+Transport and discipline only; persistence (writing genres and marking a row
+`ok`) is Step 13.
 
-- [ ] `MusicBrainzClient` trait plus real implementation (crate or `reqwest`,
-      per step 1).
-- [ ] Rate limit **≥1 s between requests**, driven by the injected `Clock` so
-      tests don't sleep.
-- [ ] Descriptive User-Agent with a contact address. Non-negotiable — generic
-      agents get blocked.
-- [ ] Retry `503`/`5xx` with exponential backoff, ≥3 attempts.
-- [ ] `404` → `mb_sync_state = 'failed'` with the reason; the run continues.
-- [ ] Give-up → `failed`. **Never leave a row `pending` after a real attempt**,
-      or every re-run retries it forever.
-- [ ] Commit state per album so an interrupted run resumes where it stopped.
+- [x] `MusicBrainzClient` trait (`crates/album-tool/src/musicbrainz.rs`) plus
+      `RealMusicBrainzClient`, wrapping `musicbrainz_rs` 0.13.0 as decided in
+      Step 1/spec §3.3. Returns a minimal own domain type (`ReleaseGroupData` /
+      `GenreVote`), not the raw `musicbrainz_rs::ReleaseGroup` — same
+      not-leaking-the-dependency shape as `SongTags` for MPD.
+- [x] Rate limit **≥1 s between requests** — **not** driven by the injected
+      `Clock` in the end. `musicbrainz_rs`'s own built-in rate limiter turned
+      out to be unreachable through any public feature flag (real finding,
+      recorded in `AGENTS.md`), so `RateLimiter` is hand-rolled instead:
+      `std::time::Instant` + a `Mutex<Option<Instant>>`, independent of the
+      wall-clock `Clock` trait (which is about RFC 3339 storage timestamps, a
+      different concern — rate limiting wants a monotonic clock). Korny's
+      call: tests use real short durations (e.g. 30ms) and assert on wall
+      time directly, rather than building a fake-clock/Sleeper abstraction —
+      simpler, and the plan's original "so tests don't sleep" framing doesn't
+      hold once a monotonic `Instant` replaces `Clock` here anyway.
+- [x] Descriptive User-Agent (`album-tool/0.1.0 (korny@sietsma.com)`,
+      `musicbrainz::USER_AGENT`).
+- [x] Retry `503`/`5xx` with exponential backoff (`backoff_duration`, pure
+      and unit-tested), ≥3 attempts (`RequestPolicy::max_attempts`, default
+      3). The crate already retries a bare `503` internally; this wraps the
+      whole call for everything else, since (per `AGENTS.md`) the crate does
+      not retry other `5xx` statuses on its own.
+- [x] `404` → detected via `err.as_musicbrainz_error().is_some_and(|e|
+      e.is_not_found())`, no retry, `mb_sync_state = 'failed'` with the
+      reason via the new `albumdb::set_sync_failed`; the run continues.
+- [x] Give-up after `max_attempts` → `failed` the same way. Never leaves a
+      row `pending` after a real attempt.
+- [x] Commit state per album: `set_sync_failed` is one `UPDATE` per album,
+      called synchronously as each release-group result comes back — no
+      batching, so an interrupted run's earlier failures are already durable.
 
-**Automated, all against the fake client:**
-- [ ] Rate limiting: N requests request ≥ N−1 seconds from the fake clock.
-- [ ] `503` then success → succeeds after retry.
-- [ ] Persistent `503` → `failed` with an error recorded, run continues.
-- [ ] `404` → `failed`, run continues.
-- [ ] Selection honours `match_policy = 'never'`, `status = 'missing'` and
-      `mb_release_group_id IS NULL`.
-- [ ] **De-duplication by release group:** two albums sharing one group cause
-      exactly one request. (1,830 groups across 1,886 albums — spec §7.1.)
-- [ ] Interrupting mid-run and resuming re-requests nothing already `ok`.
+**Revised after Korny review (scope boundary vs. Step 13):** a *successful*
+fetch is **not persisted** in this step — the row stays `mb_sync_state =
+'pending'`. Only failures write to the database. This was an explicit choice:
+Step 13 must write genres + `mb_sync_state = 'ok'` together, atomically, so a
+row is never `ok` without the genre data that justifies it; Step 12 builds and
+proves the transport/selection/dedup/retry machinery via the fake client
+without needing that atomicity yet. Mirrors Step 8's precedent of an
+explicitly incomplete intermediate step. `SyncReport.albums_fetched_ok` exists
+so a real run's own output stays honest about this ("not yet persisted — Step
+13") rather than implying more happened than did.
+
+**New:** `crates/albumdb/src/queries.rs` gained `pending_sync_albums` (spec
+§7.1's `WHERE` clause: `status = 'present'`, `match_policy != 'never'`,
+`mb_release_group_id IS NOT NULL`, plus `mb_sync_state = 'pending'` unless
+`--force`, which widens that to `ok`/`failed` too — re-attempts everything
+eligible regardless of last outcome) and `set_sync_failed`.
+`crates/album-tool/src/sync.rs`'s `run_sync` selects, groups by
+`mb_release_group_id` (`BTreeMap`, spec §7.1 dedup), applies `--limit` to the
+deduplicated group count, and loops with the rate limiter between requests.
+
+**Automated (12 new tests, all against the fake client or pure functions):**
+- [x] `musicbrainz.rs` (4): `backoff_duration` doubles per attempt;
+      `RateLimiter::wait_duration` pure-computed (nothing due before the
+      first request, correct remainder after one); `throttle` enforces real
+      spacing across 3 calls (wall-clock assertion, ~30ms interval).
+- [x] `sync.rs` (8): selection honours `match_policy = 'never'`; dedup by
+      release group (2 albums, 1 request); a success leaves the row
+      `pending`; a `404` is recorded `failed` and the run continues past it;
+      a give-up (`MusicBrainzError::Other`) is recorded `failed`; `--limit`
+      caps the number of release groups requested; a previously-`failed`
+      album is *not* re-attempted on a plain re-run (resumability); `--force`
+      does re-attempt it.
+
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` (album-tool 53/53,
+albumdb 57/57, controller 57/57).
+
+**Manual against the live API:** `album-tool sync --limit 1` and `--limit 3`
+run against the real `mpd.conf`-derived `albums.db`. Both completed
+successfully (`fetched ok`, `0 failed`); the 3-request run took ~3.8s wall
+time, consistent with the ≥1s rate limit actually being enforced against a
+real network round trip, not just in the fake-client tests.
 
 ---
 

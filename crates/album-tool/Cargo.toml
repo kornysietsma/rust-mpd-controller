@@ -10,6 +10,7 @@ albumdb = { path = "../albumdb" }
 anyhow = "1.0.104"
 clap = { version = "4.6.5", features = ["derive"] }
 mpd_client = "1.4.1"
+musicbrainz_rs = { version = "0.13.0", features = ["async"] }
 time = { version = "0.3.55", features = ["macros"] }
 tokio = { version = "1.53.1", features = ["rt", "net", "time"] }
 

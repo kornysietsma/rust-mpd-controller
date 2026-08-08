@@ -1,0 +1,278 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use musicbrainz_rs::entity::release_group::ReleaseGroup;
+use musicbrainz_rs::prelude::*;
+
+/// One release-group genre with its MusicBrainz vote count (spec §2.2, §7.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenreVote {
+    pub genre: String,
+    pub votes: i64,
+}
+
+/// Everything `sync`'s transport layer fetches for one release group.
+/// Deliberately minimal for now — just what Step 12 (transport) needs.
+/// Step 13 ("apply results") will extend this with the earliest release's
+/// track count (spec §7.3's `mb_original_count`), fetched from the same
+/// `inc=releases` request rather than a second round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseGroupData {
+    pub genres: Vec<GenreVote>,
+}
+
+/// Why a release-group fetch failed. `NotFound` (404) means the MBID is
+/// stale and needs a Picard fix (spec §7.2) — it is never retried. Anything
+/// else is a transient-or-unknown failure that already went through the
+/// retry/backoff loop and gave up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MusicBrainzError {
+    NotFound,
+    Other(String),
+}
+
+impl std::fmt::Display for MusicBrainzError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MusicBrainzError::NotFound => write!(f, "not found (404): MBID is stale"),
+            MusicBrainzError::Other(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+/// Fetches release-group data from MusicBrainz. `sync`'s only dependency on
+/// the network — a fake implementation stands in for it under test (plan
+/// §1.3), the same shape as `LibrarySource` for MPD.
+pub trait MusicBrainzClient {
+    async fn release_group(&self, mbid: &str) -> Result<ReleaseGroupData, MusicBrainzError>;
+}
+
+/// A descriptive User-Agent identifying the application and a contact
+/// address, as MusicBrainz's API policy requires (spec §7.1) — anonymous or
+/// generic agents get blocked.
+pub const USER_AGENT: &str = "album-tool/0.1.0 (korny@sietsma.com)";
+
+/// How long to wait between requests, and how the retry loop backs off on
+/// failure. Production uses [`RequestPolicy::default`]; tests use much
+/// shorter durations so they run fast without needing a fake clock (Korny's
+/// call — see plan.md Step 12).
+#[derive(Debug, Clone, Copy)]
+pub struct RequestPolicy {
+    pub min_interval: Duration,
+    pub backoff_base: Duration,
+    pub max_attempts: u32,
+}
+
+impl Default for RequestPolicy {
+    fn default() -> Self {
+        Self {
+            min_interval: Duration::from_secs(1),
+            backoff_base: Duration::from_secs(2),
+            max_attempts: 3,
+        }
+    }
+}
+
+/// Waits at least `min_interval` between successive [`RateLimiter::throttle`]
+/// calls (spec §7.1's "max 1 request/second, enforced by the client, not by
+/// hope"). `musicbrainz_rs` 0.13.0's own leaky-bucket limiter turns out to be
+/// unreachable through its public feature flags (AGENTS.md) — this replaces
+/// it.
+///
+/// `wait_duration` is the pure decision (unit-testable without waiting);
+/// `throttle` is the thin async wrapper that actually sleeps.
+pub struct RateLimiter {
+    min_interval: Duration,
+    last_request: Mutex<Option<Instant>>,
+}
+
+impl RateLimiter {
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            min_interval,
+            last_request: Mutex::new(None),
+        }
+    }
+
+    fn wait_duration(&self, now: Instant) -> Duration {
+        match *self.last_request.lock().unwrap() {
+            Some(last) => self.min_interval.saturating_sub(now.duration_since(last)),
+            None => Duration::ZERO,
+        }
+    }
+
+    pub async fn throttle(&self) {
+        let wait = self.wait_duration(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        *self.last_request.lock().unwrap() = Some(Instant::now());
+    }
+}
+
+/// Exponential backoff for the outer retry loop: `base * 2^(attempt - 1)`,
+/// so attempt 1 waits `base`, attempt 2 waits `2*base`, attempt 3 waits
+/// `4*base`. Pure — the async retry loop that calls it is the thin,
+/// untested-directly wrapper (matching `RateLimiter::throttle`).
+pub fn backoff_duration(attempt: u32, base: Duration) -> Duration {
+    base * 2u32.pow(attempt.saturating_sub(1))
+}
+
+/// The real MusicBrainz client, wrapping `musicbrainz_rs`. Handles rate
+/// limiting and retry/backoff itself (see [`RateLimiter`]'s doc comment for
+/// why) on top of whatever the crate does internally for a bare `503`.
+pub struct RealMusicBrainzClient {
+    client: musicbrainz_rs::client::MusicBrainzClient,
+    rate_limiter: RateLimiter,
+    policy: RequestPolicy,
+}
+
+impl RealMusicBrainzClient {
+    pub fn new(policy: RequestPolicy) -> Self {
+        Self {
+            client: musicbrainz_rs::client::MusicBrainzClient::new(USER_AGENT),
+            rate_limiter: RateLimiter::new(policy.min_interval),
+            policy,
+        }
+    }
+}
+
+impl MusicBrainzClient for RealMusicBrainzClient {
+    async fn release_group(&self, mbid: &str) -> Result<ReleaseGroupData, MusicBrainzError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            self.rate_limiter.throttle().await;
+
+            match ReleaseGroup::fetch()
+                .id(mbid)
+                .with_genres()
+                .execute_with_client_async(&self.client)
+                .await
+            {
+                Ok(release_group) => return Ok(to_domain(release_group)),
+                Err(err) => {
+                    if err.as_musicbrainz_error().is_some_and(|e| e.is_not_found()) {
+                        return Err(MusicBrainzError::NotFound);
+                    }
+                    if attempt >= self.policy.max_attempts {
+                        return Err(MusicBrainzError::Other(err.to_string()));
+                    }
+                    tokio::time::sleep(backoff_duration(attempt, self.policy.backoff_base)).await;
+                }
+            }
+        }
+    }
+}
+
+fn to_domain(release_group: ReleaseGroup) -> ReleaseGroupData {
+    let genres = release_group
+        .genres
+        .unwrap_or_default()
+        .into_iter()
+        .map(|g| GenreVote {
+            genre: g.name,
+            votes: i64::from(g.count.unwrap_or(0)),
+        })
+        .collect();
+    ReleaseGroupData { genres }
+}
+
+#[cfg(test)]
+pub struct FakeMusicBrainzClient {
+    responses: std::collections::HashMap<String, Vec<Result<ReleaseGroupData, MusicBrainzError>>>,
+    /// How many times each MBID has been called so far — indexes into that
+    /// MBID's queued responses.
+    call_counts: Mutex<std::collections::HashMap<String, usize>>,
+    pub calls: Mutex<Vec<String>>,
+}
+
+#[cfg(test)]
+impl FakeMusicBrainzClient {
+    /// Queues a sequence of responses for one MBID, returned in order —
+    /// one entry per call, so a test can script "503 then success" or
+    /// "always 503" by queuing enough entries. Calling past the queue's end
+    /// panics: a test that hits this has made more requests than it meant
+    /// to.
+    pub fn new(
+        responses: std::collections::HashMap<
+            String,
+            Vec<Result<ReleaseGroupData, MusicBrainzError>>,
+        >,
+    ) -> Self {
+        Self {
+            responses,
+            call_counts: Mutex::new(std::collections::HashMap::new()),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl MusicBrainzClient for FakeMusicBrainzClient {
+    async fn release_group(&self, mbid: &str) -> Result<ReleaseGroupData, MusicBrainzError> {
+        self.calls.lock().unwrap().push(mbid.to_string());
+
+        let mut counts = self.call_counts.lock().unwrap();
+        let index = counts.entry(mbid.to_string()).or_insert(0);
+        let queue = self
+            .responses
+            .get(mbid)
+            .unwrap_or_else(|| panic!("FakeMusicBrainzClient has no queued response for {mbid:?}"));
+        let response = queue.get(*index).unwrap_or_else(|| {
+            panic!("FakeMusicBrainzClient's queue for {mbid:?} exhausted after {index} calls")
+        });
+        *index += 1;
+        response.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn backoff_duration_doubles_each_attempt() {
+        let base = Duration::from_millis(10);
+        assert_eq!(backoff_duration(1, base), Duration::from_millis(10));
+        assert_eq!(backoff_duration(2, base), Duration::from_millis(20));
+        assert_eq!(backoff_duration(3, base), Duration::from_millis(40));
+    }
+
+    #[test]
+    fn rate_limiter_waits_nothing_before_the_first_request() {
+        let limiter = RateLimiter::new(Duration::from_secs(1));
+        assert_eq!(limiter.wait_duration(Instant::now()), Duration::ZERO);
+    }
+
+    #[test]
+    fn rate_limiter_computes_remaining_wait_after_a_request() {
+        let limiter = RateLimiter::new(Duration::from_millis(100));
+        let t0 = Instant::now();
+        *limiter.last_request.lock().unwrap() = Some(t0);
+
+        assert_eq!(
+            limiter.wait_duration(t0 + Duration::from_millis(40)),
+            Duration::from_millis(60)
+        );
+        assert_eq!(
+            limiter.wait_duration(t0 + Duration::from_millis(150)),
+            Duration::ZERO
+        );
+    }
+
+    #[tokio::test]
+    async fn throttle_enforces_real_spacing_between_calls() {
+        let limiter = RateLimiter::new(Duration::from_millis(30));
+        let start = Instant::now();
+        limiter.throttle().await;
+        limiter.throttle().await;
+        limiter.throttle().await;
+        assert!(
+            start.elapsed() >= Duration::from_millis(60),
+            "3 calls at 30ms apart should take at least 60ms, took {:?}",
+            start.elapsed()
+        );
+    }
+}
