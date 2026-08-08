@@ -1,18 +1,14 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use albumdb::{Album, Clock, Connection, pending_sync_albums, set_sync_failed};
+use albumdb::{
+    Album, Clock, Connection, GenreEntry, pending_sync_albums, set_sync_failed, set_sync_ok,
+};
 use anyhow::{Context, Result};
 
 use crate::musicbrainz::MusicBrainzClient;
 
-/// What one `sync` run did (spec §5.5-style report, plan Step 12).
-///
-/// **Successful fetches are not yet persisted** — Step 12 is transport
-/// only. A row that fetches cleanly stays `mb_sync_state = 'pending'` until
-/// Step 13 lands and writes genres + `ok` together, atomically, so a row is
-/// never `ok` without the genre data that justifies it. `albums_fetched_ok`
-/// exists purely so this run's own report is honest about what happened.
+/// What one `sync` run did (spec §5.5-style report).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub release_groups_attempted: usize,
@@ -25,7 +21,7 @@ impl fmt::Display for SyncReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "  {} release group(s) requested: {} fetched ok (not yet persisted — Step 13), {} failed",
+            "  {} release group(s) requested: {} fetched ok, {} failed",
             self.release_groups_attempted, self.albums_fetched_ok, self.albums_failed
         )?;
         if !self.failures.is_empty() {
@@ -48,7 +44,7 @@ impl fmt::Display for SyncReport {
 /// exactly where it stopped (spec §7.2) rather than losing progress already
 /// made.
 pub async fn run_sync<C: MusicBrainzClient>(
-    conn: &Connection,
+    conn: &mut Connection,
     client: &C,
     limit: Option<usize>,
     force: bool,
@@ -75,7 +71,27 @@ pub async fn run_sync<C: MusicBrainzClient>(
     for (mbid, albums) in groups {
         report.release_groups_attempted += 1;
         match client.release_group(&mbid).await {
-            Ok(_data) => {
+            Ok(data) => {
+                let genres: Vec<GenreEntry> = data
+                    .genres
+                    .iter()
+                    .map(|g| GenreEntry {
+                        genre: g.genre.clone(),
+                        votes: g.votes,
+                    })
+                    .collect();
+                for album in &albums {
+                    set_sync_ok(
+                        conn,
+                        album.album_id,
+                        &genres,
+                        data.earliest_release_track_count,
+                        clock.now(),
+                    )
+                    .with_context(|| {
+                        format!("failed to persist sync result for {:?}", album.path)
+                    })?;
+                }
                 report.albums_fetched_ok += albums.len();
             }
             Err(err) => {
@@ -132,12 +148,13 @@ mod tests {
                 genre: "dream pop".to_string(),
                 votes: 5,
             }],
+            earliest_release_track_count: None,
         })
     }
 
     #[tokio::test]
     async fn selection_honours_match_policy_never() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -149,7 +166,9 @@ mod tests {
         let client =
             FakeMusicBrainzClient::new(HashMap::from([("rg-2".to_string(), vec![ok_response()])]));
 
-        let report = run_sync(&conn, &client, None, false, &clock).await.unwrap();
+        let report = run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
 
         assert_eq!(report.release_groups_attempted, 1);
         assert_eq!(client.calls.lock().unwrap().as_slice(), ["rg-2"]);
@@ -157,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn deduplicates_by_release_group_before_requesting() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -169,7 +188,9 @@ mod tests {
             vec![ok_response()],
         )]));
 
-        let report = run_sync(&conn, &client, None, false, &clock).await.unwrap();
+        let report = run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
 
         assert_eq!(report.release_groups_attempted, 1);
         assert_eq!(report.albums_fetched_ok, 2);
@@ -177,26 +198,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_success_is_not_persisted_yet_row_stays_pending() {
-        let conn = open_in_memory().unwrap();
+    async fn a_success_is_persisted_genres_primary_genre_and_ok_state() {
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
         upsert_album(&conn, &facts("Albums/A/Artist/One", Some("rg-1")), now).unwrap();
-        let client =
-            FakeMusicBrainzClient::new(HashMap::from([("rg-1".to_string(), vec![ok_response()])]));
+        let client = FakeMusicBrainzClient::new(HashMap::from([(
+            "rg-1".to_string(),
+            vec![Ok(ReleaseGroupData {
+                genres: vec![
+                    GenreVote {
+                        genre: "hard rock".to_string(),
+                        votes: 9,
+                    },
+                    GenreVote {
+                        genre: "dark cabaret".to_string(),
+                        votes: 5,
+                    },
+                ],
+                earliest_release_track_count: Some(10),
+            })],
+        )]));
 
-        run_sync(&conn, &client, None, false, &clock).await.unwrap();
+        run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
 
         let album = albumdb::find_by_path(&conn, "Albums/A/Artist/One")
             .unwrap()
             .unwrap();
-        assert_eq!(album.mb_sync_state.as_str(), "pending");
+        assert_eq!(album.mb_sync_state.as_str(), "ok");
+        assert_eq!(album.primary_genre.as_deref(), Some("hard rock"));
+        assert_eq!(album.mb_original_count, Some(10));
+        assert_eq!(album.original_tracks.as_deref(), Some("1-10"));
+        assert_eq!(album.original_tracks_src.as_deref(), Some("mb"));
+    }
+
+    /// Every album sharing a deduplicated release group gets the fetch
+    /// applied, not just the first one requested (spec §7.1).
+    #[tokio::test]
+    async fn a_shared_release_group_persists_to_every_album_that_uses_it() {
+        let mut conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let clock = FixedClock(now);
+
+        upsert_album(&conn, &facts("Albums/A/Artist/One", Some("rg-shared")), now).unwrap();
+        upsert_album(&conn, &facts("Albums/B/Artist/Two", Some("rg-shared")), now).unwrap();
+
+        let client = FakeMusicBrainzClient::new(HashMap::from([(
+            "rg-shared".to_string(),
+            vec![ok_response()],
+        )]));
+
+        run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
+
+        for path in ["Albums/A/Artist/One", "Albums/B/Artist/Two"] {
+            let album = albumdb::find_by_path(&conn, path).unwrap().unwrap();
+            assert_eq!(album.mb_sync_state.as_str(), "ok", "{path}");
+            assert_eq!(album.primary_genre.as_deref(), Some("dream pop"), "{path}");
+        }
     }
 
     #[tokio::test]
     async fn a_404_is_recorded_as_failed_and_the_run_continues() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -208,7 +276,9 @@ mod tests {
             ("rg-ok".to_string(), vec![ok_response()]),
         ]));
 
-        let report = run_sync(&conn, &client, None, false, &clock).await.unwrap();
+        let report = run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
 
         assert_eq!(report.albums_failed, 1);
         assert_eq!(report.albums_fetched_ok, 1);
@@ -223,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_give_up_after_retries_is_recorded_as_failed() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -235,7 +305,9 @@ mod tests {
             ))],
         )]));
 
-        let report = run_sync(&conn, &client, None, false, &clock).await.unwrap();
+        let report = run_sync(&mut conn, &client, None, false, &clock)
+            .await
+            .unwrap();
         assert_eq!(report.albums_failed, 1);
 
         let album = albumdb::find_by_path(&conn, "Albums/A/Artist/Flaky")
@@ -250,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn limit_caps_the_number_of_release_groups_requested() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -262,7 +334,7 @@ mod tests {
             ("rg-2".to_string(), vec![ok_response()]),
         ]));
 
-        let report = run_sync(&conn, &client, Some(1), false, &clock)
+        let report = run_sync(&mut conn, &client, Some(1), false, &clock)
             .await
             .unwrap();
         assert_eq!(report.release_groups_attempted, 1);
@@ -274,7 +346,7 @@ mod tests {
     /// the same database.
     #[tokio::test]
     async fn a_previously_failed_album_is_not_reattempted_without_force() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -283,12 +355,12 @@ mod tests {
             "rg-1".to_string(),
             vec![Err(MusicBrainzError::NotFound)],
         )]));
-        run_sync(&conn, &first_client, None, false, &clock)
+        run_sync(&mut conn, &first_client, None, false, &clock)
             .await
             .unwrap();
 
         let second_client = FakeMusicBrainzClient::new(HashMap::new());
-        let report = run_sync(&conn, &second_client, None, false, &clock)
+        let report = run_sync(&mut conn, &second_client, None, false, &clock)
             .await
             .unwrap();
 
@@ -297,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn force_reattempts_a_previously_failed_album() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         let now = datetime!(2026-08-05 00:00:00 UTC);
         let clock = FixedClock(now);
 
@@ -306,13 +378,13 @@ mod tests {
             "rg-1".to_string(),
             vec![Err(MusicBrainzError::NotFound)],
         )]));
-        run_sync(&conn, &first_client, None, false, &clock)
+        run_sync(&mut conn, &first_client, None, false, &clock)
             .await
             .unwrap();
 
         let second_client =
             FakeMusicBrainzClient::new(HashMap::from([("rg-1".to_string(), vec![ok_response()])]));
-        let report = run_sync(&conn, &second_client, None, true, &clock)
+        let report = run_sync(&mut conn, &second_client, None, true, &clock)
             .await
             .unwrap();
 

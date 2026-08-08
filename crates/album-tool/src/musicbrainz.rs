@@ -12,13 +12,14 @@ pub struct GenreVote {
 }
 
 /// Everything `sync`'s transport layer fetches for one release group.
-/// Deliberately minimal for now — just what Step 12 (transport) needs.
-/// Step 13 ("apply results") will extend this with the earliest release's
-/// track count (spec §7.3's `mb_original_count`), fetched from the same
-/// `inc=releases` request rather than a second round trip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseGroupData {
     pub genres: Vec<GenreVote>,
+    /// The track count of the earliest release in the group (spec §7.3's
+    /// `mb_original_count`) — the *tagged* release often carries bonus
+    /// tracks and can't supply this. `None` when no release in the group
+    /// carries both a date and media/track-count data to derive it from.
+    pub earliest_release_track_count: Option<i64>,
 }
 
 /// Why a release-group fetch failed. `NotFound` (404) means the MBID is
@@ -147,6 +148,8 @@ impl MusicBrainzClient for RealMusicBrainzClient {
             match ReleaseGroup::fetch()
                 .id(mbid)
                 .with_genres()
+                .with_releases()
+                .with_medias()
                 .execute_with_client_async(&self.client)
                 .await
             {
@@ -165,6 +168,32 @@ impl MusicBrainzClient for RealMusicBrainzClient {
     }
 }
 
+/// Just enough of a `musicbrainz_rs::entity::release::Release` to pick the
+/// earliest one and total its tracks. Kept separate from that library's own
+/// (large, `Default`-less) `Release` type so [`earliest_release_track_count`]
+/// stays unit-testable with plain hand-built values, the same reasoning as
+/// `SongTags` for MPD (plan §1.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseTrackInfo {
+    /// MusicBrainz's raw date string (`"1972"`, `"1972-02"`, `"1972-02-14"`
+    /// — precision varies release to release). Compared lexicographically to
+    /// find the earliest, which is correct for same-precision dates and only
+    /// approximate across mixed precision (a bare year sorts before any full
+    /// date in that year) — an acceptable edge case for this cache column.
+    date: String,
+    track_count: i64,
+}
+
+/// The track count of the earliest release with both a date and media data
+/// (spec §7.3). Releases missing either are excluded, since neither
+/// "earliest" nor "how many tracks" can be determined for them.
+fn earliest_release_track_count(releases: &[ReleaseTrackInfo]) -> Option<i64> {
+    releases
+        .iter()
+        .min_by(|a, b| a.date.cmp(&b.date))
+        .map(|r| r.track_count)
+}
+
 fn to_domain(release_group: ReleaseGroup) -> ReleaseGroupData {
     let genres = release_group
         .genres
@@ -175,7 +204,25 @@ fn to_domain(release_group: ReleaseGroup) -> ReleaseGroupData {
             votes: i64::from(g.count.unwrap_or(0)),
         })
         .collect();
-    ReleaseGroupData { genres }
+
+    let releases: Vec<ReleaseTrackInfo> = release_group
+        .releases
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| {
+            let date = r.date?.0;
+            if date.is_empty() {
+                return None;
+            }
+            let track_count: i64 = r.media?.iter().map(|m| i64::from(m.track_count)).sum();
+            Some(ReleaseTrackInfo { date, track_count })
+        })
+        .collect();
+
+    ReleaseGroupData {
+        genres,
+        earliest_release_track_count: earliest_release_track_count(&releases),
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +278,30 @@ impl MusicBrainzClient for FakeMusicBrainzClient {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn earliest_release_track_count_picks_the_lowest_date() {
+        let releases = vec![
+            ReleaseTrackInfo {
+                date: "1999-06-01".to_string(),
+                track_count: 12,
+            },
+            ReleaseTrackInfo {
+                date: "1972-02-14".to_string(),
+                track_count: 10,
+            },
+            ReleaseTrackInfo {
+                date: "1980-01-01".to_string(),
+                track_count: 11,
+            },
+        ];
+        assert_eq!(earliest_release_track_count(&releases), Some(10));
+    }
+
+    #[test]
+    fn earliest_release_track_count_none_when_no_releases_qualify() {
+        assert_eq!(earliest_release_track_count(&[]), None);
+    }
 
     #[test]
     fn backoff_duration_doubles_each_attempt() {

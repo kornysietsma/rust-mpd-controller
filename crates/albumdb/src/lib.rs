@@ -20,7 +20,8 @@ pub use enums::{
 pub use queries::{
     GenreEntry, all_albums, all_present, find_by_path, mark_missing, pending_sync_albums,
     replace_genres, set_is_classical, set_is_soundtrack, set_is_spoken, set_match_policy,
-    set_needs_relisten, set_original_tracks, set_rating, set_sync_failed, upsert_album,
+    set_needs_relisten, set_original_tracks, set_rating, set_sync_failed, set_sync_ok,
+    upsert_album,
 };
 pub use rusqlite::Connection;
 pub use song_tags::SongTags;

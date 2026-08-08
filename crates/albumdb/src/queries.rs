@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, named_params, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 use time::OffsetDateTime;
 
 use crate::album::{Album, AlbumFacts};
@@ -129,16 +129,14 @@ pub struct GenreEntry {
 }
 
 /// Replace every `album_genres` row for `album_id` from the given `source`
-/// with `genres`. Rows from the *other* source are untouched — a `sync` run
-/// replacing `mb` genres never disturbs the `tag` genre written by `scan`,
-/// and vice versa (spec §7.3).
-pub fn replace_genres(
-    conn: &mut Connection,
+/// within an already-open transaction — shared by [`replace_genres`] (its own
+/// standalone transaction) and [`set_sync_ok`] (one step of a larger one).
+fn replace_genres_tx(
+    tx: &Transaction,
     album_id: i64,
     source: GenreSource,
     genres: &[GenreEntry],
 ) -> Result<()> {
-    let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM album_genres WHERE album_id = ?1 AND source = ?2",
         params![album_id, source.as_str()],
@@ -156,7 +154,74 @@ pub fn replace_genres(
             )
         })?;
     }
+    Ok(())
+}
+
+/// Replace every `album_genres` row for `album_id` from the given `source`
+/// with `genres`. Rows from the *other* source are untouched — a `sync` run
+/// replacing `mb` genres never disturbs the `tag` genre written by `scan`,
+/// and vice versa (spec §7.3).
+pub fn replace_genres(
+    conn: &mut Connection,
+    album_id: i64,
+    source: GenreSource,
+    genres: &[GenreEntry],
+) -> Result<()> {
+    let tx = conn.transaction()?;
+    replace_genres_tx(&tx, album_id, source, genres)?;
     tx.commit().context("failed to commit genre replacement")?;
+    Ok(())
+}
+
+/// Records a successful `sync` fetch (spec §7.3): replaces the album's `mb`
+/// genres, caches `primary_genre` (the highest-voted one), writes
+/// `mb_original_count`, and marks the row `ok` — all in one transaction, so
+/// a row is never observably `ok` without the genre data that justifies it.
+///
+/// When `mb_original_count` is known and `original_tracks` is still `NULL`,
+/// also sets `original_tracks = '1-<n>'` with `original_tracks_src = 'mb'`.
+/// An already-set value — `manual` or a previous `sync`'s own `mb` value —
+/// is never overwritten (spec §7.3).
+pub fn set_sync_ok(
+    conn: &mut Connection,
+    album_id: i64,
+    genres: &[GenreEntry],
+    mb_original_count: Option<i64>,
+    now: OffsetDateTime,
+) -> Result<()> {
+    let primary_genre = genres.iter().max_by_key(|g| g.votes).map(|g| &g.genre);
+    let now = format_timestamp(now);
+
+    let tx = conn.transaction()?;
+    replace_genres_tx(&tx, album_id, GenreSource::Mb, genres)?;
+    tx.execute(
+        "UPDATE albums SET
+            mb_sync_state     = 'ok',
+            mb_synced_at      = :now,
+            mb_sync_error     = NULL,
+            mb_original_count = :count,
+            primary_genre     = :genre
+         WHERE album_id = :album_id",
+        named_params! {
+            ":now": now,
+            ":count": mb_original_count,
+            ":genre": primary_genre,
+            ":album_id": album_id,
+        },
+    )
+    .with_context(|| format!("failed to record sync success for album {album_id}"))?;
+    if let Some(count) = mb_original_count {
+        tx.execute(
+            "UPDATE albums SET original_tracks = :range, original_tracks_src = 'mb'
+             WHERE album_id = :album_id AND original_tracks IS NULL",
+            named_params! {
+                ":range": format!("1-{count}"),
+                ":album_id": album_id,
+            },
+        )
+        .with_context(|| format!("failed to set original_tracks for album {album_id}"))?;
+    }
+    tx.commit().context("failed to commit sync success")?;
     Ok(())
 }
 
@@ -624,6 +689,152 @@ mod tests {
         assert!(forced_ids.contains(&still_pending));
         assert!(forced_ids.contains(&ok));
         assert!(forced_ids.contains(&failed));
+    }
+
+    #[test]
+    fn set_sync_ok_writes_genres_primary_genre_and_original_count() {
+        let mut conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+
+        set_sync_ok(
+            &mut conn,
+            album_id,
+            &[
+                GenreEntry {
+                    genre: "hard rock".to_string(),
+                    votes: 9,
+                },
+                GenreEntry {
+                    genre: "dark cabaret".to_string(),
+                    votes: 5,
+                },
+            ],
+            Some(10),
+            now,
+        )
+        .unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert_eq!(album.mb_sync_state.as_str(), "ok");
+        assert_eq!(album.mb_synced_at.as_deref(), Some("2026-08-05T00:00:00Z"));
+        assert_eq!(album.mb_sync_error, None);
+        assert_eq!(album.mb_original_count, Some(10));
+        assert_eq!(album.primary_genre.as_deref(), Some("hard rock"));
+        assert_eq!(album.original_tracks.as_deref(), Some("1-10"));
+        assert_eq!(album.original_tracks_src.as_deref(), Some("mb"));
+
+        let mut stmt = conn
+            .prepare("SELECT genre, votes FROM album_genres WHERE album_id = ?1 AND source = 'mb' ORDER BY votes DESC")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map(params![album_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("hard rock".to_string(), 9),
+                ("dark cabaret".to_string(), 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_sync_ok_leaves_tag_genres_and_a_manual_original_tracks_alone() {
+        let mut conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+
+        replace_genres(
+            &mut conn,
+            album_id,
+            GenreSource::Tag,
+            &[GenreEntry {
+                genre: "Hard Rock".to_string(),
+                votes: 0,
+            }],
+        )
+        .unwrap();
+        set_original_tracks(&conn, album_id, Some(&"1-8".parse().unwrap())).unwrap();
+
+        set_sync_ok(
+            &mut conn,
+            album_id,
+            &[GenreEntry {
+                genre: "hard rock".to_string(),
+                votes: 9,
+            }],
+            Some(10),
+            now,
+        )
+        .unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        // A pre-existing original_tracks (here manual, but the guard is
+        // "already set", not "specifically manual") is never overwritten.
+        assert_eq!(album.original_tracks.as_deref(), Some("1-8"));
+        assert_eq!(album.original_tracks_src.as_deref(), Some("manual"));
+
+        let mut stmt = conn
+            .prepare("SELECT genre FROM album_genres WHERE album_id = ?1 AND source = 'tag'")
+            .unwrap();
+        let tag_genres: Vec<String> = stmt
+            .query_map(params![album_id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(tag_genres, vec!["Hard Rock".to_string()]);
+    }
+
+    #[test]
+    fn set_sync_ok_replaces_mb_genres_without_duplicating_on_a_forced_resync() {
+        let mut conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+
+        set_sync_ok(
+            &mut conn,
+            album_id,
+            &[GenreEntry {
+                genre: "indie rock".to_string(),
+                votes: 17,
+            }],
+            None,
+            now,
+        )
+        .unwrap();
+        set_sync_ok(
+            &mut conn,
+            album_id,
+            &[GenreEntry {
+                genre: "chamber pop".to_string(),
+                votes: 4,
+            }],
+            None,
+            now,
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT genre FROM album_genres WHERE album_id = ?1 AND source = 'mb'")
+            .unwrap();
+        let mb_genres: Vec<String> = stmt
+            .query_map(params![album_id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(mb_genres, vec!["chamber pop".to_string()]);
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert_eq!(album.primary_genre.as_deref(), Some("chamber pop"));
     }
 
     #[test]

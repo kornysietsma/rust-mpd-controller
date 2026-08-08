@@ -46,14 +46,15 @@ fn main() -> Result<()> {
             println!("{counts}");
         }
         Command::Sync { limit, force } => {
-            let conn = albumdb::open(&db_path)?;
-            let client = musicbrainz::RealMusicBrainzClient::new(musicbrainz::RequestPolicy::default());
+            let mut conn = albumdb::open(&db_path)?;
+            let client =
+                musicbrainz::RealMusicBrainzClient::new(musicbrainz::RequestPolicy::default());
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("failed to start async runtime for MusicBrainz requests")?;
             let report = runtime.block_on(sync::run_sync(
-                &conn,
+                &mut conn,
                 &client,
                 limit,
                 force,

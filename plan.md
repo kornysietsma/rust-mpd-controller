@@ -626,50 +626,101 @@ against a real network round trip.
 
 ---
 
-### Step 13 — `sync`: apply results
+### Step 13 — `sync`: apply results — DONE
 
-**Continuing from Step 12:** the hook point is `sync::run_sync`'s `Ok(_data)
-=>` arm (`crates/album-tool/src/sync.rs`) — currently just counts
-`albums_fetched_ok` and discards `_data`; extend it to persist instead. A
-success there means a **fresh** fetch, since Step 12 never saved one — no
-special-casing needed for rows that "already succeeded" under Step 12.
-`musicbrainz::ReleaseGroupData` (`crates/album-tool/src/musicbrainz.rs`)
-currently only carries `genres: Vec<GenreVote>`; add
-`earliest_release_track_count: Option<i64>` (or similar) and have
-`RealMusicBrainzClient::release_group` add `.with_releases()` alongside the
-existing `.with_genres()` on the same request — no second round trip needed
-(spec §7.3, confirmed by the Step 1 spike). `albumdb` needs a new `set_sync_ok`
-(or extend `replace_genres`'s call site) that writes `mb_sync_state = 'ok'`,
-`mb_synced_at`, `primary_genre`, `mb_original_count` and calls
-`replace_genres(.., GenreSource::Mb, ..)` together — ideally in one
-transaction, so a row is never observably `ok` without its genre data.
+**Spike, live (2026-08-07):** confirmed via `curl` against the real API that
+`inc=releases` alone returns no `media`/track-count data — `inc=media` (i.e.
+`.with_medias()`) has to be requested alongside it. Spec §7.3's "needs
+`inc=releases`" was imprecise; corrected here rather than in the spec text
+itself since this is an implementation-level detail already superseded by
+what actually shipped.
 
-- [ ] Write `album_genres` with `source = 'mb'` and vote counts, replacing only
-      `mb` rows.
-- [ ] Cache `primary_genre` = highest-voted genre.
-- [ ] `mb_original_count` from the earliest release in the release group
-      (needs `inc=releases`). The *tagged* release includes bonus tracks and
-      cannot supply this.
-- [ ] Where confidently derivable and `original_tracks` is unset, set
-      `'1-<n>'` with `original_tracks_src = 'mb'`. **Never overwrite
-      `manual`.**
-- [ ] `mb_sync_state = 'ok'`, `mb_synced_at` from the injected clock.
-- [ ] Category flags are **not** written — deferred per spec §7.3.
+- [x] `musicbrainz::ReleaseGroupData` (`crates/album-tool/src/musicbrainz.rs`)
+      gained `earliest_release_track_count: Option<i64>`.
+      `RealMusicBrainzClient::release_group` now chains `.with_genres()`,
+      `.with_releases()`, **and** `.with_medias()` on one request — no second
+      round trip. A private `ReleaseTrackInfo { date, track_count }` (not
+      `musicbrainz_rs::Release`, which has no `Default` and is awkward to
+      hand-build) plus a pure `earliest_release_track_count` function pick
+      the release with the lexicographically-earliest date string and sum its
+      media's track counts. Documented edge case: comparing raw date strings
+      of mixed precision (`"1972"` vs `"1972-02-14"`) is only approximate —
+      acceptable for a cache column, not worth a `chrono` dependency to fix.
+- [x] `albumdb::set_sync_ok` (`crates/albumdb/src/queries.rs`), one
+      transaction: replaces `source = 'mb'` genres (via a new
+      `replace_genres_tx` helper shared with the standalone `replace_genres`,
+      rather than duplicating the delete/insert), sets `primary_genre` to the
+      highest-voted genre, `mb_original_count`, `mb_sync_state = 'ok'`,
+      `mb_synced_at`. Where `mb_original_count` is known and `original_tracks`
+      is still `NULL`, also sets `original_tracks = '1-<n>'` with
+      `original_tracks_src = 'mb'` — the guard is "already set" (`manual` or
+      a prior sync's own `mb` value), not specifically `manual`, matching
+      spec §7.3's "never overwrite manual" plus the natural reading that a
+      value shouldn't churn on every `--force` re-run either.
+- [x] `sync::run_sync`'s `Ok(data) =>` arm now calls `set_sync_ok` once per
+      album sharing the release group, instead of only counting. `conn` is
+      `&mut Connection` throughout (`main.rs` updated to match) since
+      `set_sync_ok` needs a transaction.
+- [x] Category flags still **not** written — unchanged, deferred per spec
+      §7.3.
 
-**Automated:**
-- [ ] Canned response → correct genres with votes, correct `primary_genre`.
-- [ ] `source = 'tag'` genre rows survive.
-- [ ] An `original_tracks_src = 'manual'` value is not overwritten.
-- [ ] Re-sync with `--force` replaces `mb` genres without duplicating.
+**Automated (10 new tests — album-tool 56/56, albumdb 60/60, controller
+57/57):**
+- [x] `earliest_release_track_count` picks the lowest date; empty input is
+      `None` (3 pure tests in `musicbrainz.rs`).
+- [x] `set_sync_ok` writes genres with votes, `primary_genre`, and
+      `mb_original_count`/`original_tracks` correctly (`queries.rs`).
+- [x] `source = 'tag'` genres and an already-set `original_tracks` both
+      survive a `set_sync_ok` call untouched (`queries.rs`).
+- [x] A second `set_sync_ok` (simulating `--force`) replaces `mb` genres
+      without duplicating (`queries.rs`).
+- [x] `run_sync`: a success is now persisted — `ok` state, `primary_genre`,
+      `mb_original_count`, `original_tracks` all land (replaces Step 12's
+      "stays pending" test, which described the now-superseded transport-only
+      behaviour). A second new test confirms a deduplicated release group's
+      fetch is applied to *every* album sharing it, not just the first
+      (`sync.rs`).
 
-**Manual against the live API:**
-- [ ] `album-tool sync --limit 5` first. Confirm ~1 s between requests and
-      sensible genres before running at scale.
-- [ ] Full run: ~1,830 requests, **~31 minutes**. Interrupt it partway and
-      resume; confirm it doesn't restart.
-- [ ] Spot-check *Welcome to My Nightmare* against spec §2.2 — `hard rock(9)`,
-      `dark cabaret(5)`, `rock(5)`, and 10 genres rather than the single
-      `Hard Rock` file tag.
+Quality gates clean: `cargo fmt --all`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace`.
+
+**Manual against the live API — all done:**
+- [x] `album-tool sync --limit 3` against the real `mpd.conf`-derived
+      `albums.db` (1,886 albums, 0 previously synced): 3 requests in ~3.7s,
+      confirming the rate limit still holds. Inspected the result directly
+      with `sqlite3`: *Daft Punk — Homework* got 12 MB genres (`electronic`
+      15, `house` 12, `french house` 6, ... down to 1-vote tags) alongside
+      its untouched `source = 'tag'` row (`Techno`, votes 0); `primary_genre
+      = 'electronic'`; `mb_original_count = 16`, `original_tracks = '1-16'`,
+      `original_tracks_src = 'mb'`. Its pre-existing `rating = 5` (and the
+      other two albums' `is_classical`/`needs_relisten`/`match_policy`/
+      `notes`) survived unchanged, confirming the no-user-field-overwritten
+      invariant against real data, not just the fixture.
+- [x] **Full run**, in two parts to exercise resumability for real: started
+      an unlimited `sync` in the background, let it run ~90s (92 albums
+      landed `ok`), then **`kill`ed the process** (not `--limit` — a genuine
+      interruption) to confirm state survives a hard stop, not just a clean
+      one. `status` afterwards showed exactly `92 ok / 1794 pending / 0
+      failed` — no corruption, no partially-written row. Ran `sync` again
+      with no flags: it resumed and ran to completion (~28 more minutes,
+      backgrounded) without re-requesting the 92 already-`ok` groups.
+      **Final state:** `1836 ok / 50 pending / 0 failed`. The 50 permanently
+      `pending` are exactly the albums with `mb_release_group_id IS NULL`
+      (spec §2.1's "no MBID at all: 50") — `pending_sync_albums` excludes
+      them by design, so there's nothing left to attempt. `1829` distinct
+      `mb_release_group_id`s reached `ok` (spec's estimate: ~1,830). Average
+      5.3 MB genres per synced album (max 29), matching "several genres each,
+      rather than one."
+- [x] Spot-checked *Welcome to My Nightmare* against spec §2.2: `primary_genre
+      = 'hard rock'`, and all 10 genres with vote counts match exactly —
+      `hard rock(9)`, `dark cabaret(5)`, `rock(5)`, `classic rock(3)`, `glam
+      rock(3)`, `art rock(2)`, `heavy metal(2)`, `pop rock(2)`, `rock
+      opera(2)`, `vaudeville(2)`.
+- [x] Post-run invariant checks against the live database: no `.db-wal`/
+      `.db-shm` sidecar next to `albums.db`; ratings/`is_classical`/
+      `needs_relisten` still exactly `416`/`69`/`17`; a second `scan`
+      afterwards reports `added 0 / updated 1886 / newly missing 0` and all
+      three counts above are still unchanged.
 
 ---
 
@@ -677,17 +728,25 @@ transaction, so a row is never observably `ok` without its genre data.
 
 A full `scan` → ratings import script → `sync` against the live library, then:
 
-- [ ] 1,886 albums with the `tag_state` distribution from spec §5.4.
-- [ ] 416 ratings, 69 `is_classical`, 17 `needs_relisten`.
-- [ ] ~1,830 release groups carrying MB genres, **several genres each**.
-- [ ] A second `scan` changes nothing.
-- [ ] **No automated command has modified any user-editable field.**
-- [ ] `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --workspace` all
-      clean.
-- [ ] The menu-bar app still works, installed as a bundle.
-- [ ] No `.db-wal` or `.db-shm` file next to the database.
+- [x] 1,886 albums with the `tag_state` distribution from spec §5.4 —
+      confirmed after Step 13's full `sync` run and a follow-up `scan`.
+- [x] 416 ratings, 69 `is_classical`, 17 `needs_relisten` — unchanged through
+      `sync` and a follow-up `scan`.
+- [x] 1,829 release groups carrying MB genres (spec's estimate: ~1,830),
+      average 5.3 genres each, max 29.
+- [x] A second `scan` changes nothing (`added 0 / updated 1886 / newly
+      missing 0`, all counts above unchanged).
+- [x] **No automated command has modified any user-editable field** —
+      verified across both `scan` and `sync` against real data (Steps 10 and
+      13).
+- [x] `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --workspace` all
+      clean (173 tests: album-tool 56, albumdb 60, controller 57).
+- [ ] The menu-bar app still works, installed as a bundle — last confirmed at
+      Step 2, not re-verified since (no controller-crate changes since then).
+- [x] No `.db-wal` or `.db-shm` file next to the database.
 - [ ] `scripts/import_ratings.py` deleted in a final commit, having served its
-      one purpose. It remains in git history.
+      one purpose. It remains in git history. **Not yet done** — deliberately
+      left for the actual final commit, not folded into Step 13.
 
 ## 4. Out of scope
 
