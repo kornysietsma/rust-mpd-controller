@@ -96,6 +96,17 @@ pub fn all_present(conn: &Connection) -> Result<Vec<Album>> {
         .context("failed to read a present-album row")
 }
 
+/// Every album row regardless of `status` — `status` reports on `missing`
+/// rows too, which `all_present` deliberately excludes.
+pub fn all_albums(conn: &Connection) -> Result<Vec<Album>> {
+    let mut stmt = conn.prepare("SELECT * FROM albums ORDER BY path")?;
+    let rows = stmt
+        .query_map([], Album::from_row)
+        .context("failed to query albums")?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read an album row")
+}
+
 /// Mark an album as no longer found in MPD. Never deletes the row — that
 /// would silently discard a rating (spec §5.2). Does not touch `last_seen`:
 /// that column records when the album was last *present*, and a directory
@@ -414,6 +425,21 @@ mod tests {
         let present = all_present(&conn).unwrap();
         assert_eq!(present.len(), 1);
         assert_eq!(present[0].path, "Albums/B/Artist/Two");
+    }
+
+    #[test]
+    fn all_albums_includes_missing_albums() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let a = upsert_album(&conn, &facts("Albums/A/Artist/One"), now).unwrap();
+        upsert_album(&conn, &facts("Albums/B/Artist/Two"), now).unwrap();
+        mark_missing(&conn, a).unwrap();
+
+        let all = all_albums(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].path, "Albums/A/Artist/One");
+        assert_eq!(all[0].status.as_str(), "missing");
+        assert_eq!(all[1].path, "Albums/B/Artist/Two");
     }
 
     #[test]

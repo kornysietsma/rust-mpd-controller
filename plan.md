@@ -481,80 +481,83 @@ left persisted (either that check ran read-only, or the file was reset
 since). Not a Step 9 bug: against an empty DB, `--dry-run` correctly reported
 all 1,886 albums as `added`, 0 `updated`, 0 `missing`. Korny chose to skip a
 throwaway real scan just to exercise-and-revert a directory rename, and fold
-Step 9's live rename check into Step 10's first real scan instead — see the
-new checklist item at the top of Step 10.
+Step 9's live rename check into Step 10's first real scan instead.
 
 ---
 
-### Step 10 — Ratings import (Python one-off, not Rust)
+### Step 10 — Ratings import (Python one-off, not Rust) — DONE
 
-**Before this step: the live `albums.db` is currently empty (see Step 9's
-last paragraph).** The first real `album-tool scan` (not `--dry-run`) against
-the live library needs to happen before the ratings import can run at all
-(spec §6: "It must run after a `scan`"). Fold Step 9's deferred manual check
-into that same run:
+Ran a real `album-tool scan` (not `--dry-run`) against the live library —
+was empty going into this step (Step 9's last paragraph). Result: 1,886
+albums written, `tag_state` distribution an exact match to spec §5.4
+(1833/2/1/43/3/4), idempotent on a second run (`0 added / 1886 updated / 0
+missing`). Also exercised the deferred Step 9 rename check live (rename a
+real directory, `mpc update --wait`, rescan, rename back, rescan): confirmed
+old-path-`missing`/new-path-added and rename-back-to-`present`-as-`updated`
+both work exactly as designed (§5.2, no auto-rename matching).
 
-- [ ] Run `album-tool scan` for real against the live library. Confirm the
-      `tag_state` counts match spec §5.4 (1833/2/1/43/3/4) and the report
-      shows 1,886 `added`, 0 `updated`, 0 `missing`.
-- [ ] Rename one real album directory, `mpc update`, re-scan: confirm the old
-      path is `missing` (rating intact, if it had one) and a new unrated row
-      exists at the new path, both listed in the report. Rename it back,
-      re-scan, confirm it returns to `present` with rating intact and the
-      report shows it as `updated`.
+**Unrelated to `album-tool` itself, found and fixed while exercising `mpc
+update` live:** two pre-existing Dropbox `(Case Conflict)` directory splits
+in the real library (`Steve Earle & The Dukes`, `Charli XCX`), caused by
+case-inconsistent MusicBrainz artist credits between releases. Fixed by hand
+(tag + directory correction on both) and added a standing beets `inline`
+plugin workaround so future imports reuse existing on-disk casing instead of
+creating a new split — documented outside this repo at
+`~/.config/beets/case_sensitive_beets_workaround.md`. Not this project's
+concern beyond the fact that it's why the live database briefly showed extra
+`missing` rows mid-step; both are cleaned up now.
 
-**No Rust, no automated tests.** This runs once against real data; correctness
-is established by looking at the result. Must run **after** a successful
-`scan`, since it only updates rows that already exist.
+`scripts/import_ratings.py` (PEP 723 `uv` script, stdlib only, no Rust, no
+automated tests — spec §6) written and run against the real CSV and the live
+`albums.db`. Unmatched paths are handled by a preflight check that aborts
+before writing anything rather than silently skipping (none triggered — spec
+§2.6 predicted this). Result, verified both in the script's own summary and
+by direct SQL: **416 ratings, 69 `is_classical`, 17 `needs_relisten`** —
+exact match to spec. Re-ran `scan` afterwards and confirmed all three counts
+survive untouched, proving the §5 no-user-field-overwritten invariant holds
+against real data, not just the fixture. `ruff check`/`format` clean.
 
-A single `uv` script with PEP 723 inline metadata, at
-**`scripts/import_ratings.py`** — deliberately *not* in `album-data/`, which is
-gitignored. The script is committed for posterity; the CSV it reads is not, so
-take the CSV path and the database path as **arguments** rather than hard-coding
-them. No personal data enters git.
+**State the live `albums.db` is now in, for Step 11 onward:** 1,886
+`present` / 0 `missing`, tag_state distribution per spec §5.4, 416/69/17
+ratings set. No longer empty — `status` and `sync` steps run against this
+real data from here on.
 
-- [ ] Read `all_albums_export.csv`, take **only** the `rating` column.
-- [ ] Map per spec §6: `0`–`5` → `rating` + `rated_at`; `?` →
-      `needs_relisten = 1`; `c` → `is_classical = 1`; blank → no change.
-- [ ] Match on exact `file` path against `albums.path`, trailing slash
-      stripped.
-- [ ] Ignore the one duplicate (`Compilations/Sound Environment`) — last row
-      wins, correct by hand later if it matters.
-- [ ] Print a summary of what it did.
+Quality gates clean; counts unchanged from Step 9 since this step added no
+Rust code (album-tool 39/39, albumdb 53/53, controller 57/57).
 
-No dry-run, no `--force`, no unmatched-path handling: spec §2.6 established
-that **all 1,848 CSV paths already exist**, so there is no such case to design
-around. If the script reports otherwise, stop — the library has moved and that
-is worth understanding, not working around.
-
-**Verify by inspecting the data** (spec §2.6):
-- [ ] 416 ratings, 69 `is_classical`, 17 `needs_relisten` — via
-      `album-tool status` or plain SQL.
-- [ ] Spot-check a handful of known albums against the spreadsheet.
-- [ ] Re-run `album-tool scan` afterwards and confirm every rating survives.
-      This is the real proof that the §5 invariant holds against live data.
-
-**Lifecycle:** write it → run it → verify the data → **commit it** → delete it
-in a later commit once the whole plan is done (§3). Git history keeps it for
-posterity, so nothing is lost by removing it from the working tree, and the
-repo doesn't carry a script that can never be usefully run again.
+**Not yet done:** `scripts/import_ratings.py` is still committed. Its
+deletion is deferred to the final commit in §3, after `sync` (Steps 12–13)
+is also complete.
 
 ---
 
-### Step 11 — `status`
+### Step 11 — `status` — DONE
 
-- [ ] Counts by `tag_state` and `mb_sync_state`.
-- [ ] Albums with `status = 'missing'`.
-- [ ] `mixed_mbid` / `partial_mbid` albums listed **for manual fixing in
+- [x] Counts by `tag_state` and `mb_sync_state`.
+- [x] Albums with `status = 'missing'`.
+- [x] `mixed_mbid` / `partial_mbid` albums listed **for manual fixing in
       Picard** — the tool reports, it never edits files.
-- [ ] Failed syncs with their errors.
-- [ ] Rating coverage and `needs_relisten` count.
+- [x] Failed syncs with their errors.
+- [x] Rating coverage and `needs_relisten` count.
 
-**Automated:** seeded in-memory DB produces the expected report.
+**New:** `crates/album-tool/src/status.rs` —
+`compute_status_report(&Connection) -> StatusReport`, a pure read over
+`albumdb::all_albums` (new query, `all_present`'s counterpart that includes
+`missing` rows too). `TagStateCounts` (from `scan.rs`) gained a
+`from_tag_states` constructor so `status` reuses its six-arm match instead of
+duplicating it; `SyncStateCounts` is the analogous new type for
+`mb_sync_state`. `Display` renders in the same indented-text style as
+`scan`'s report.
 
-**Manual:** run against the live database; confirm the two known `mixed_mbid`
-albums appear — `Billy Bragg/The Million Things That Never Happened` and
-`Dire Straits/Brothers in Arms`.
+**Automated:** 3 new album-tool tests (seeded in-memory DB → every report
+section at once, plus an all-missing DB), 1 new albumdb test (`all_albums`).
+Quality gates clean (album-tool 41/41, albumdb 54/54, controller 57/57).
+
+**Manual — verified against the live database:** output matches spec §8
+exactly, including both real `mixed_mbid` albums and the one `partial_mbid`
+album (`Billy Bragg/The Million Things That Never Happened`, `Dire
+Straits/Brothers in Arms`, `Unnmatched/rowan_8th_birthday`). `mb_sync_state`
+is all `pending`, as expected before `sync` exists.
 
 ---
 

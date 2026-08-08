@@ -264,9 +264,15 @@ pub struct TagStateCounts {
 
 impl TagStateCounts {
     pub fn from_groups(groups: &[AlbumGroup]) -> Self {
+        Self::from_tag_states(groups.iter().map(|g| g.facts.tag_state))
+    }
+
+    /// Shared with `status`, which counts `tag_state` straight off `Album`
+    /// rows read back from the database rather than freshly scanned groups.
+    pub fn from_tag_states(states: impl Iterator<Item = TagState>) -> Self {
         let mut counts = Self::default();
-        for group in groups {
-            match group.facts.tag_state {
+        for state in states {
+            match state {
                 TagState::Clean => counts.clean += 1,
                 TagState::MixedMbid => counts.mixed_mbid += 1,
                 TagState::PartialMbid => counts.partial_mbid += 1,

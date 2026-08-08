@@ -3,6 +3,7 @@ mod library;
 mod mpd_conf;
 mod mpd_wire;
 mod scan;
+mod status;
 
 use std::path::PathBuf;
 
@@ -49,10 +50,9 @@ fn main() -> Result<()> {
             );
         }
         Command::Status => {
-            println!(
-                "status: not yet implemented (db_path={})",
-                db_path.display()
-            );
+            let conn = albumdb::open(&db_path)?;
+            let report = status::compute_status_report(&conn)?;
+            println!("{report}");
         }
     }
 
