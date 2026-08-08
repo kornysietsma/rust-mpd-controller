@@ -279,9 +279,10 @@ and makes every Dropbox snapshot restorable.
 
 **Timestamps** (`first_seen`, `last_seen`, `rated_at`, `mb_synced_at`,
 `mb_verified_at`) are stored as RFC 3339 text (`2026-08-05T12:34:56Z`).
-Every write goes through an injected `Clock`, never a bare `now()` call, so
-that code paths involving time — rate limiting during `sync` chief among
-them — stay deterministic under test.
+Every write goes through an injected `Clock`, never a bare `now()` call.
+`sync`'s rate limiting turned out *not* to go through this `Clock` in the end
+— see §7.1 — since it wants a monotonic clock, a different concern from
+these wall-clock storage timestamps.
 
 ### 4.2 Schema
 
@@ -560,13 +561,16 @@ run.
 MusicBrainz policy compliance is non-negotiable:
 
 - **Maximum 1 request/second**, enforced by the client, not by hope.
-  `musicbrainz_rs` ships its own leaky-bucket limiter (5-burst, 1/s refill);
-  whether that alone satisfies this or needs wrapping with the injected
-  `Clock` for deterministic tests is a `sync`-implementation decision, not a
-  design one (see `AGENTS.md`).
+  `musicbrainz_rs` 0.13.0's own leaky-bucket limiter turned out to be
+  unreachable through any public feature flag — confirmed by reading its
+  source (`AGENTS.md` has the detail). `album-tool` enforces this itself
+  instead: a small `RateLimiter` built on `std::time::Instant` (a monotonic
+  clock, not the wall-clock `Clock` trait §4.1 uses for storage timestamps),
+  gating every request to ≥1s apart.
 - **A descriptive User-Agent identifying the application and a contact
   address.** Anonymous or generic agents get blocked. Set via
-  `MusicBrainzClient::new(user_agent)`, not a global function.
+  `MusicBrainzClient::new(user_agent)`, not a global function. Implemented as
+  `album-tool/0.1.0 (korny@sietsma.com)`.
 - No authentication is needed.
 
 Endpoint: `/ws/2/release-group/<mbid>?inc=genres&fmt=json`
