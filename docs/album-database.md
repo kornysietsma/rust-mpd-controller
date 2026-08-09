@@ -50,14 +50,66 @@ PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 ```
 
-The music folder syncs to Dropbox and is copied to a NAS over SMB. With WAL
-enabled, Dropbox can upload `albums.db` and `albums.db-wal` at different
-moments and capture an inconsistent pair — corrupting the *backup* while the
-live file stays fine. `DELETE` mode has no sidecar, so every snapshot is
-self-consistent. It costs nothing at this scale (~1,900 rows, batch writes).
+**The reason is backup integrity, not sync.** This is not about anything
+writing *into* the database from outside — nothing does. It is about what
+happens when a file-copying backup *reads* it.
+
+A WAL database is two files: recent commits live in `albums.db-wal` and only
+land in `albums.db` at a checkpoint. Any copier that takes files
+independently — Dropbox, an SMB copy to the NAS, a plain `cp` — can capture
+`albums.db` and `albums.db-wal` at different moments. Restoring that pair is
+safe *only* if no checkpoint happened in between; if one did, the WAL was
+reset and its frames assume a main file that has already absorbed the
+checkpointed pages, so replay yields a database missing them. The live file
+stays fine — it is the **backup** that is quietly corrupt, which you discover
+at the worst possible moment. This is why `VACUUM INTO` and the backup API
+exist: copying a live WAL database file-by-file is a known footgun.
+
+`DELETE` mode has no permanent sidecar, so every snapshot is self-consistent.
+
+**The cost, measured** (1.9 MB database, this machine, 2026-08-07):
+
+| | `DELETE` | `WAL` |
+|---|---|---|
+| Single-row commit | 3.46 ms | 0.93 ms |
+| Full-table transaction | 64.7 ms | 58.6 ms |
+| Indexed row read | 91 µs | 61 µs |
+
+WAL is genuinely faster; the absolute numbers are irrelevant at this scale. The
+menu-bar app writes one row per rating click and `album-tool scan` runs by
+hand.
+
+The menu-bar app holding a connection open 24/7 makes `DELETE` *more*
+attractive than it was when this was chosen: `-wal` and `-shm` exist for as
+long as any connection is open, so under WAL they would go from appearing
+briefly during an `album-tool` run to being permanent fixtures the backup
+picks up on every rating change.
 
 Multi-writer safety is a non-goal: the folder is synced between machines but
 never written from two at once.
+
+### If a GUI tool switches the database to WAL
+
+`journal_mode = WAL` is persisted in the **file header**, not per connection,
+so a tool like DBeaver can flip it and the setting outlives that tool's
+session. Measured behaviour:
+
+- **Anything can flip `DELETE` → `WAL` at any time**, including while the
+  menu-bar app holds a connection open. A running app is not protection.
+- The reverse, `WAL` → `DELETE`, needs exclusive access. `albumdb`'s
+  `apply_pragmas` runs it on every open, so the next `album-tool` run or app
+  restart converts it back — checkpointing the WAL, deleting both sidecars,
+  preserving all data.
+- That reset fails with `SQLITE_BUSY` if another connection holds the database
+  at that moment. The error propagates rather than passing silently, but the
+  file stays in WAL until a later open succeeds.
+- Setting `DELETE` on a database already in `DELETE` needs no lock and never
+  fails, even against a connection mid-transaction — so applying the pragma is
+  safe in the normal case.
+
+If you edit the database in a GUI tool, close it afterwards, and check for a
+stray `albums.db-wal` next to the database. While one exists, backups of it
+are not trustworthy.
 
 ## The measured baseline
 
