@@ -4,6 +4,7 @@
 #![warn(rust_2024_compatibility)]
 #![warn(deprecated_safe)]
 
+mod album;
 mod clipboard;
 mod command;
 mod config;

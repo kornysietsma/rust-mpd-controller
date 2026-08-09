@@ -491,11 +491,19 @@ reset:
   `Unavailable`, and a later retry succeeds once the other tool exits.
 
 **Upgrade `apply_pragmas` to use `pragma_update_and_check` for
-`journal_mode`**, asserting the returned mode is `delete`. `pragma_update`
-discards the value the pragma returns, so today the code cannot tell a
-successful set from a set that silently reported some other mode. Errors do
-propagate, so this is belt-and-braces — but it is cheap, and this pragma is
-load-bearing for backup integrity.
+`journal_mode`**, asserting the returned mode is `delete` **or `memory`**.
+`pragma_update` discards the value the pragma returns, so today the code
+cannot tell a successful set from a set that silently reported some other
+mode. Errors do propagate, so this is belt-and-braces — but it is cheap, and
+this pragma is load-bearing for backup integrity.
+
+The `memory` exception is load-bearing, not decorative: SQLite reports
+`journal_mode = memory` for a `:memory:` database regardless of what's
+requested — journaling in memory can't be anything else — and
+`open_in_memory` (used throughout both crates' test suites) shares
+`apply_pragmas`. A `delete`-only assertion breaks `open_in_memory` and every
+test built on it. `pragmas_read_back_correctly` already asserted this
+behaviour before it became load-bearing here.
 
 **`enums.rs` — new `AlbumFlag`**
 
@@ -540,7 +548,11 @@ suite still passes rather than assuming.
 ### 7.2 `crates/controller/src/album.rs` (new)
 
 Owns the thread and everything that touches SQLite. No formatting logic — that
-belongs in `menu.rs` with the rest of the pure model layer.
+belongs in `menu.rs` with the rest of the pure model layer. The one exception
+is `AlbumInfo::year`: it's built by calling `menu::year_of` (§4.2) on the
+row's `original_date`/`date`, since year extraction is display logic even
+though it has to run before `AlbumInfo` exists. This is the only place
+`album.rs` reaches into `menu.rs`.
 
 ```rust
 /// What the main thread asks of the worker.
@@ -589,7 +601,15 @@ remembered current album. The request is then self-contained and there is no
 cross-thread ordering to reason about — the same reason `main.rs` already
 holds `current_url` for the `addto:` path.
 
-`SetCurrentAlbum` exists only so the poll knows which row to watch.
+On receipt, `SetCurrentAlbum` does two things, matching the architecture
+diagram in §6.1 ("`SetCurrentAlbum` ─▶ remember path, read row"): it updates
+the path the poll watches, **and** immediately reads and emits that path's
+state, rather than waiting for the next poll tick. A freshly-played album
+shouldn't take up to 3s to show its data. `SetRating`/`SetFlag` emit
+unconditionally too, for the same reason — a menu click is a direct request
+and gets an immediate, unconditional response, not just a "poll rules apply"
+dedup against the last state sent. Deduping against the last-sent state
+(§6.3) applies only to the timer-driven poll, never to a direct request.
 
 ### 7.3 `crates/controller/src/menu.rs`
 

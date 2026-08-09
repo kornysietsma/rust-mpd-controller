@@ -159,6 +159,28 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
     truncated
 }
 
+/// The year to show for an album: `original_date`'s year, falling back to
+/// `date`'s year, `None` if neither is present or usable. Added ahead of the
+/// rest of the album section (spec §4.2) because `album.rs`'s worker needs it
+/// to populate `AlbumInfo::year` from a database row.
+///
+/// Extraction is just the first four bytes of the string — `original_date`
+/// and `date` are always `YYYY`, `YYYY-MM` or `YYYY-MM-DD` — but guarded: only
+/// accepted if all four bytes are ASCII digits, so a malformed value degrades
+/// to "no year" rather than printing garbage into the menu bar.
+pub(crate) fn year_of<'a>(
+    original_date: Option<&'a str>,
+    date: Option<&'a str>,
+) -> Option<&'a str> {
+    fn year_prefix(s: &str) -> Option<&str> {
+        let prefix = s.get(0..4)?;
+        prefix.bytes().all(|b| b.is_ascii_digit()).then_some(prefix)
+    }
+    original_date
+        .and_then(year_prefix)
+        .or_else(|| date.and_then(year_prefix))
+}
+
 pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[String]) -> String {
     let truncated = truncate(&format_track(title, url, artists), TITLE_MAX_CHARS);
     if state == PlayState::Paused {
@@ -589,6 +611,29 @@ mod tests {
         let result = truncate(&text, 25);
         assert_eq!(result.chars().count(), 25);
         assert_eq!(result, format!("{}{}", "a".repeat(24), ELLIPSIS));
+    }
+
+    #[test]
+    fn year_of_extracts_from_each_stored_date_format() {
+        assert_eq!(year_of(Some("1996"), None), Some("1996"));
+        assert_eq!(year_of(Some("1996-05"), None), Some("1996"));
+        assert_eq!(year_of(Some("1996-05-12"), None), Some("1996"));
+    }
+
+    #[test]
+    fn year_of_falls_back_to_date_when_original_date_is_absent() {
+        assert_eq!(year_of(None, Some("2003-01-01")), Some("2003"));
+    }
+
+    #[test]
+    fn year_of_is_none_when_both_are_absent() {
+        assert_eq!(year_of(None, None), None);
+    }
+
+    #[test]
+    fn year_of_rejects_a_non_numeric_leading_four_characters() {
+        assert_eq!(year_of(Some("abcd-05"), Some("2003")), Some("2003"));
+        assert_eq!(year_of(Some("abcd"), None), None);
     }
 
     #[test]

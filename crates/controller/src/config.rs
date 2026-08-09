@@ -29,25 +29,33 @@ struct FileConfig {
     key_playlists: Vec<String>,
 }
 
-/// The resolved settings the app actually runs on.
+/// The resolved settings the app actually runs on. `db_path` is guaranteed
+/// present and pointing at a real file — `load` never returns a `Config`
+/// where the database couldn't be found: `validate_db_path` turns both "no
+/// location known" and "location known but nothing there" into a
+/// `ConfigError` first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub mpd_host: String,
     pub mpd_port: u16,
-    /// `None` when neither the config file nor `mpd.conf` could supply one —
-    /// `resolve`'s own possibility, though `load` never returns a `Config`
-    /// with this unset: `validate_db_path` turns that case into a
-    /// `ConfigError` first. Not yet read by anything — the menu-bar app
-    /// doesn't consume the album database yet (see
-    /// `docs/future_expansions.md`) — but its *presence* is checked at
-    /// startup regardless.
-    pub db_path: Option<PathBuf>,
+    pub db_path: PathBuf,
     pub key_playlists: Vec<String>,
 }
 
-impl Default for Config {
+/// Precedence-resolved settings before the database's presence has been
+/// confirmed — `db_path` may still be unknown here. `resolve` computes this;
+/// `validate_db_path` turns it into a `Config` (or a `ConfigError`).
+#[derive(Debug, Clone, PartialEq)]
+struct ResolvedConfig {
+    mpd_host: String,
+    mpd_port: u16,
+    db_path: Option<PathBuf>,
+    key_playlists: Vec<String>,
+}
+
+impl Default for ResolvedConfig {
     fn default() -> Self {
-        Config {
+        ResolvedConfig {
             mpd_host: DEFAULT_MPD_HOST.to_string(),
             mpd_port: DEFAULT_MPD_PORT,
             db_path: None,
@@ -131,18 +139,23 @@ pub fn load() -> Result<Config, ConfigError> {
     })?;
     debug!("read MPD settings from {}", mpd_conf_path.display());
 
-    let config = resolve(file, Some(&conf));
-    validate_db_path(&config)?;
-    Ok(config)
+    let resolved = resolve(file, Some(&conf));
+    let db_path = validate_db_path(&resolved)?;
+    Ok(Config {
+        mpd_host: resolved.mpd_host,
+        mpd_port: resolved.mpd_port,
+        db_path,
+        key_playlists: resolved.key_playlists,
+    })
 }
 
 /// Confirms `albums.db` is actually reachable, not just that some path was
-/// computed for it. Not read by the menu-bar app yet (see
-/// `docs/future_expansions.md`), but that's coming soon, and a broken path
-/// is far easier to diagnose at startup than the first time something tries
-/// to open it.
-fn validate_db_path(config: &Config) -> Result<(), ConfigError> {
-    let Some(db_path) = &config.db_path else {
+/// computed for it — a broken path is far easier to diagnose at startup than
+/// the first time something tries to open it. Returns the confirmed path,
+/// which is what makes `Config::db_path` a plain `PathBuf` rather than an
+/// `Option`: nothing downstream of `load` can observe an unconfirmed one.
+fn validate_db_path(resolved: &ResolvedConfig) -> Result<PathBuf, ConfigError> {
+    let Some(db_path) = &resolved.db_path else {
         return Err(ConfigError::DbLocationUnknown);
     };
     let dir = db_path.parent().unwrap_or_else(|| Path::new("."));
@@ -155,13 +168,13 @@ fn validate_db_path(config: &Config) -> Result<(), ConfigError> {
             path: db_path.clone(),
         });
     }
-    Ok(())
+    Ok(db_path.clone())
 }
 
 /// Config file wins over `mpd.conf`, which wins over the built-in defaults.
 /// Pure, so the precedence rules are testable without touching either file.
-fn resolve(file: FileConfig, conf: Option<&MpdConf>) -> Config {
-    Config {
+fn resolve(file: FileConfig, conf: Option<&MpdConf>) -> ResolvedConfig {
+    ResolvedConfig {
         mpd_host: file
             .mpd_host
             .unwrap_or_else(|| DEFAULT_MPD_HOST.to_string()),
@@ -309,7 +322,10 @@ mod tests {
     /// `ConfigError::MpdConf` instead of using it.
     #[test]
     fn falls_back_to_defaults_without_mpd_conf() {
-        assert_eq!(resolve(FileConfig::default(), None), Config::default());
+        assert_eq!(
+            resolve(FileConfig::default(), None),
+            ResolvedConfig::default()
+        );
     }
 
     /// `music_directory` is commented out in a default mpd.conf; the port is
@@ -355,17 +371,17 @@ mod tests {
         dir
     }
 
-    fn config_with_db_path(db_path: Option<PathBuf>) -> Config {
-        Config {
+    fn resolved_with_db_path(db_path: Option<PathBuf>) -> ResolvedConfig {
+        ResolvedConfig {
             db_path,
-            ..Config::default()
+            ..ResolvedConfig::default()
         }
     }
 
     #[test]
     fn validate_db_path_errors_when_location_unknown() {
         assert!(matches!(
-            validate_db_path(&config_with_db_path(None)),
+            validate_db_path(&resolved_with_db_path(None)),
             Err(ConfigError::DbLocationUnknown)
         ));
     }
@@ -377,7 +393,7 @@ mod tests {
         let db_path = dir.join("albums.db");
 
         assert!(matches!(
-            validate_db_path(&config_with_db_path(Some(db_path))),
+            validate_db_path(&resolved_with_db_path(Some(db_path))),
             Err(ConfigError::DbDirNotAccessible { .. })
         ));
     }
@@ -387,7 +403,7 @@ mod tests {
         let dir = temp_dir("file-missing");
         let db_path = dir.join("albums.db");
 
-        let result = validate_db_path(&config_with_db_path(Some(db_path.clone())));
+        let result = validate_db_path(&resolved_with_db_path(Some(db_path.clone())));
         fs::remove_dir_all(&dir).ok();
 
         assert!(matches!(result, Err(ConfigError::DbFileMissing { path }) if path == db_path));
@@ -399,9 +415,9 @@ mod tests {
         let db_path = dir.join("albums.db");
         fs::File::create(&db_path).unwrap();
 
-        let result = validate_db_path(&config_with_db_path(Some(db_path)));
+        let result = validate_db_path(&resolved_with_db_path(Some(db_path.clone())));
         fs::remove_dir_all(&dir).ok();
 
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), db_path);
     }
 }

@@ -7,6 +7,7 @@ license.workspace = true
 readme = "../../README.md"
 
 [dependencies]
+albumdb = { path = "../albumdb" }
 anyhow.workspace = true
 log = "0.4.33"
 # `muda` is deliberately *not* a direct dependency: `tray_icon::menu` re-exports
