@@ -154,7 +154,7 @@ impl fmt::Display for StatusReport {
 mod tests {
     use super::*;
     use albumdb::{
-        AlbumFacts, FixedClock, TitleSource, mark_missing, open_in_memory, set_needs_relisten,
+        AlbumFacts, AlbumFlag, FixedClock, TitleSource, mark_missing, open_in_memory, set_flag,
         set_rating, upsert_album,
     };
     use pretty_assertions::assert_eq;
@@ -209,7 +209,7 @@ mod tests {
             clock.0,
         )
         .unwrap();
-        set_needs_relisten(&conn, relisten, true).unwrap();
+        set_flag(&conn, relisten, AlbumFlag::Relisten, true).unwrap();
 
         let gone = upsert_album(
             &conn,

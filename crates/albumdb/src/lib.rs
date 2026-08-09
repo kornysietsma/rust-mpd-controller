@@ -11,14 +11,14 @@ mod tag_state;
 pub use album::{Album, AlbumFacts};
 pub use album_path::parse_album_path;
 pub use clock::{Clock, FixedClock, SystemClock, format_timestamp};
-pub use connection::{open, open_in_memory};
+pub use connection::{open, open_existing, open_in_memory};
 pub use date::normalise_date;
 pub use enums::{
-    AlbumStatus, GenreSource, MatchPolicy, SyncState, TagState, TitleSource, VerifyState,
+    AlbumFlag, AlbumStatus, GenreSource, MatchPolicy, SyncState, TagState, TitleSource, VerifyState,
 };
 pub use queries::{
     GenreEntry, all_albums, all_present, find_by_path, mark_missing, pending_sync_albums,
-    replace_genres, set_match_policy, set_needs_relisten, set_rating, set_sync_failed, set_sync_ok,
+    replace_genres, set_flag, set_match_policy, set_rating, set_sync_failed, set_sync_ok,
     upsert_album,
 };
 pub use rusqlite::Connection;

@@ -80,6 +80,28 @@ string_enum!(VerifyState {
     Drifted => "drifted",
 });
 
+/// The four boolean columns editable from the menu-bar app's `Album ▸`
+/// submenu. Not a `string_enum!` — it names *columns*, not a schema string
+/// value stored in one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlbumFlag {
+    Relisten,
+    Classical,
+    Spoken,
+    Soundtrack,
+}
+
+impl AlbumFlag {
+    pub fn column(self) -> &'static str {
+        match self {
+            AlbumFlag::Relisten => "needs_relisten",
+            AlbumFlag::Classical => "is_classical",
+            AlbumFlag::Spoken => "is_spoken",
+            AlbumFlag::Soundtrack => "is_soundtrack",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

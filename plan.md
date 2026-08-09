@@ -35,53 +35,60 @@ them once this lands, per `AGENTS.md`'s note on stale spec references.
 Everything storage-side the controller will call. No controller code yet —
 this step is self-contained and testable against an in-memory database.
 
-- [ ] `connection.rs`: add `open_existing(path: &Path) -> Result<Connection>` —
+- [x] `connection.rs`: add `open_existing(path: &Path) -> Result<Connection>` —
   applies pragmas via the existing `apply_pragmas`, runs no schema. Uses
   `Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)` (no
   `SQLITE_OPEN_CREATE`), so a missing file errors instead of being silently
   created.
-- [ ] `connection.rs`: upgrade `apply_pragmas`'s `journal_mode` set to
+- [x] `connection.rs`: upgrade `apply_pragmas`'s `journal_mode` set to
   `pragma_update_and_check`, asserting the returned mode is `"delete"`
   (case-insensitive compare, matching the existing pragma tests' style).
-- [ ] `enums.rs`: add `AlbumFlag { Relisten, Classical, Spoken, Soundtrack }`
+  **Deviation:** also accepts `"memory"` — `:memory:` databases always report
+  `journal_mode = memory` regardless of what's requested (SQLite can't journal
+  in-memory databases any other way), so a strict `"delete"`-only assertion
+  broke `open_in_memory()` and every test built on it. Confirmed via the
+  existing `pragmas_read_back_correctly` test, which already asserted this
+  behaviour before this change.
+- [x] `enums.rs`: add `AlbumFlag { Relisten, Classical, Spoken, Soundtrack }`
   with `column(self) -> &'static str` mapping to `needs_relisten`,
   `is_classical`, `is_spoken`, `is_soundtrack`. Not a `string_enum!` — it
   names columns, not a schema string value.
-- [ ] `queries.rs`: add `set_flag(conn, album_id, flag: AlbumFlag, value: bool) -> Result<()>`.
+- [x] `queries.rs`: add `set_flag(conn, album_id, flag: AlbumFlag, value: bool) -> Result<()>`.
   Column name is formatted into the SQL string — comment *why* that's safe
   (closed enum, never caller data), so a reviewer doesn't flag it as
   injection.
-- [ ] `queries.rs`: remove `set_needs_relisten`; it's fully superseded by
+- [x] `queries.rs`: remove `set_needs_relisten`; it's fully superseded by
   `set_flag(.., AlbumFlag::Relisten, ..)`.
-- [ ] `queries.rs`: `set_rating(Some(value))`'s `UPDATE` also sets
+- [x] `queries.rs`: `set_rating(Some(value))`'s `UPDATE` also sets
   `needs_relisten = 0`, in the same statement as `rating`/`rated_at`. Update
   the doc comment. `set_rating(None)` is unchanged (untouched `needs_relisten`,
   per spec §5.1 — unreachable from the menu but still part of the API).
-- [ ] `lib.rs`: export `open_existing`, `AlbumFlag`, `set_flag`; drop
+- [x] `lib.rs`: export `open_existing`, `AlbumFlag`, `set_flag`; drop
   `set_needs_relisten` from the export list.
-- [ ] `crates/album-tool/src/status.rs`: update its one call site — the test
+- [x] `crates/album-tool/src/status.rs`: update its one call site — the test
   `report_covers_tag_states_sync_states_missing_ratings_and_relisten` — to use
   `set_flag(&conn, relisten, AlbumFlag::Relisten, true)` instead of
   `set_needs_relisten`.
 
 **Unit tests (in-memory DB, `albumdb`'s existing style):**
-- [ ] `set_flag` writes each of the four columns, both directions.
-- [ ] `set_rating(Some(n))` sets `rating`/`rated_at` **and** clears
-  `needs_relisten` (extend the existing `set_rating_clears_rating_but_keeps_rated_at`
-  test file with a case that starts `needs_relisten = true`).
-- [ ] `set_rating(None)` still leaves `needs_relisten` alone (already covered
-  by the existing test if `needs_relisten` wasn't set beforehand — extend it
-  to start `true` and assert it's still `true` afterwards).
-- [ ] `open_existing` succeeds against a database created by `open`.
-- [ ] `open_existing` on a non-existent path errors, and no file is created —
+- [x] `set_flag` writes each of the four columns, both directions.
+- [x] `set_rating(Some(n))` sets `rating`/`rated_at` **and** clears
+  `needs_relisten` — landed as a new standalone test
+  (`set_rating_some_clears_needs_relisten`) next to the existing
+  `set_rating_clears_rating_but_keeps_rated_at` rather than extending that
+  test in place, to keep each test asserting one behaviour.
+- [x] `set_rating(None)` still leaves `needs_relisten` alone — same treatment,
+  as `set_rating_none_leaves_needs_relisten_alone`.
+- [x] `open_existing` succeeds against a database created by `open`.
+- [x] `open_existing` on a non-existent path errors, and no file is created —
   assert with `path.exists()` after the call.
-- [ ] `apply_pragmas`' upgraded journal-mode check still passes the existing
+- [x] `apply_pragmas`' upgraded journal-mode check still passes the existing
   `journal_mode_on_disk_is_delete` test unmodified (regression guard on the
   `pragma_update_and_check` change).
 
 **Verification**
-- [ ] `cargo test -p albumdb` and `cargo test -p album-tool` both green.
-- [ ] Full workspace quality gate (fmt/clippy/test) green.
+- [x] `cargo test -p albumdb` and `cargo test -p album-tool` both green.
+- [x] Full workspace quality gate (fmt/clippy/test) green.
 
 ---
 

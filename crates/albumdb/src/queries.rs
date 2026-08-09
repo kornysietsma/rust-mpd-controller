@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 
 use crate::album::{Album, AlbumFacts};
 use crate::clock::format_timestamp;
-use crate::enums::{GenreSource, MatchPolicy};
+use crate::enums::{AlbumFlag, GenreSource, MatchPolicy};
 
 /// Insert a new album row, or update an existing one at the same `path`.
 ///
@@ -225,9 +225,12 @@ pub fn set_sync_ok(
     Ok(())
 }
 
-/// Set (or clear) the rating. Setting a numeric rating stamps `rated_at`;
-/// clearing it (`None`) leaves `rated_at` as a record of when it was last
-/// rated.
+/// Set (or clear) the rating. Setting a numeric rating stamps `rated_at` and
+/// clears `needs_relisten` — in the same statement, so the two writes can't
+/// land separately — since rating an album is a judgement call that
+/// supersedes a "listen again" marker. Clearing the rating (`None`) leaves
+/// `rated_at` as a record of when it was last rated, and leaves
+/// `needs_relisten` alone.
 pub fn set_rating(
     conn: &Connection,
     album_id: i64,
@@ -236,7 +239,7 @@ pub fn set_rating(
 ) -> Result<()> {
     match rating {
         Some(value) => conn.execute(
-            "UPDATE albums SET rating = ?1, rated_at = ?2 WHERE album_id = ?3",
+            "UPDATE albums SET rating = ?1, rated_at = ?2, needs_relisten = 0 WHERE album_id = ?3",
             params![value, format_timestamp(now), album_id],
         ),
         None => conn.execute(
@@ -248,12 +251,22 @@ pub fn set_rating(
     Ok(())
 }
 
-pub fn set_needs_relisten(conn: &Connection, album_id: i64, value: bool) -> Result<()> {
+/// Set one of the four boolean flag columns named by [`AlbumFlag`].
+///
+/// The column name is formatted directly into the SQL string — SQLite has no
+/// way to bind an identifier as a parameter. **This is safe**: `flag.column()`
+/// only ever returns one of four hard-coded literals from a closed enum, never
+/// caller-supplied data, so there is no injection surface here despite the
+/// shape looking like one.
+pub fn set_flag(conn: &Connection, album_id: i64, flag: AlbumFlag, value: bool) -> Result<()> {
     conn.execute(
-        "UPDATE albums SET needs_relisten = ?1 WHERE album_id = ?2",
+        &format!(
+            "UPDATE albums SET {} = ?1 WHERE album_id = ?2",
+            flag.column()
+        ),
         params![value, album_id],
     )
-    .with_context(|| format!("failed to set needs_relisten for album {album_id}"))?;
+    .with_context(|| format!("failed to set {} for album {album_id}", flag.column()))?;
     Ok(())
 }
 
@@ -364,7 +377,7 @@ mod tests {
         let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), t1).unwrap();
 
         set_rating(&conn, album_id, Some(5), t1).unwrap();
-        set_needs_relisten(&conn, album_id, true).unwrap();
+        set_flag(&conn, album_id, AlbumFlag::Relisten, true).unwrap();
         set_match_policy(&conn, album_id, MatchPolicy::Never).unwrap();
         // The rest have no setter yet — they're written by hand in SQL until
         // something needs them, which is exactly the case this guards.
@@ -585,6 +598,80 @@ mod tests {
             .unwrap();
         assert_eq!(album.rating, None);
         assert_eq!(album.rated_at.as_deref(), Some("2026-08-05T00:00:00Z"));
+    }
+
+    #[test]
+    fn set_rating_some_clears_needs_relisten() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+        set_flag(&conn, album_id, AlbumFlag::Relisten, true).unwrap();
+
+        set_rating(&conn, album_id, Some(4), now).unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert_eq!(album.rating, Some(4));
+        assert_eq!(album.rated_at.as_deref(), Some("2026-08-05T00:00:00Z"));
+        assert!(!album.needs_relisten);
+    }
+
+    #[test]
+    fn set_rating_none_leaves_needs_relisten_alone() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+        set_flag(&conn, album_id, AlbumFlag::Relisten, true).unwrap();
+
+        set_rating(&conn, album_id, None, now).unwrap();
+
+        let album = find_by_path(&conn, "Albums/A/Artist/Album")
+            .unwrap()
+            .unwrap();
+        assert!(album.needs_relisten);
+    }
+
+    #[test]
+    fn set_flag_writes_each_column_both_directions() {
+        let conn = open_in_memory().unwrap();
+        let now = datetime!(2026-08-05 00:00:00 UTC);
+        let album_id = upsert_album(&conn, &facts("Albums/A/Artist/Album"), now).unwrap();
+
+        for flag in [
+            AlbumFlag::Relisten,
+            AlbumFlag::Classical,
+            AlbumFlag::Spoken,
+            AlbumFlag::Soundtrack,
+        ] {
+            set_flag(&conn, album_id, flag, true).unwrap();
+            let on: bool = conn
+                .query_row(
+                    &format!("SELECT {} FROM albums WHERE album_id = ?1", flag.column()),
+                    params![album_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                on,
+                "{} should be true after set_flag(.., true)",
+                flag.column()
+            );
+
+            set_flag(&conn, album_id, flag, false).unwrap();
+            let off: bool = conn
+                .query_row(
+                    &format!("SELECT {} FROM albums WHERE album_id = ?1", flag.column()),
+                    params![album_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                !off,
+                "{} should be false after set_flag(.., false)",
+                flag.column()
+            );
+        }
     }
 
     #[test]

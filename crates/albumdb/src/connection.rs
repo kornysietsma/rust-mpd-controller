@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::{Context, Result, bail};
+use rusqlite::{Connection, OpenFlags};
 
 const SCHEMA: &str = include_str!("../sql/schema.sql");
 
@@ -11,6 +11,22 @@ pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     init(&conn)?;
+    Ok(conn)
+}
+
+/// Open an existing database read-write, with pragmas applied and **without**
+/// running the schema. For consumers that must never create or migrate the
+/// file — the menu-bar app, which would otherwise silently create an empty
+/// database at a mistyped path. `album-tool`, which owns the schema, keeps
+/// using [`open`].
+///
+/// `SQLITE_OPEN_CREATE` is deliberately omitted, so a missing file errors
+/// here rather than being silently created — race-free, unlike an `exists()`
+/// check followed by a plain `open`.
+pub fn open_existing(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .with_context(|| format!("failed to open existing database at {}", path.display()))?;
+    apply_pragmas(&conn)?;
     Ok(conn)
 }
 
@@ -29,8 +45,16 @@ fn init(conn: &Connection) -> Result<()> {
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
-    conn.pragma_update(None, "journal_mode", "DELETE")
+    // `:memory:` databases can never honour DELETE — SQLite always reports
+    // `memory` back for them, regardless of what's requested (see
+    // `pragmas_read_back_correctly` below) — so that's accepted too.
+    let journal_mode: String = conn
+        .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
         .context("failed to set journal_mode")?;
+    if !journal_mode.eq_ignore_ascii_case("delete") && !journal_mode.eq_ignore_ascii_case("memory")
+    {
+        bail!("expected journal_mode to be set to delete, got {journal_mode:?}");
+    }
     conn.pragma_update(None, "foreign_keys", "ON")
         .context("failed to set foreign_keys")?;
     conn.pragma_update(None, "busy_timeout", 5000)
@@ -118,6 +142,49 @@ mod tests {
 
         assert!(!dir.join("albums.db-wal").exists());
         assert!(!dir.join("albums.db-shm").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_existing_succeeds_on_a_database_created_by_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "albumdb-test-open-existing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("albums.db");
+
+        open(&db_path).unwrap();
+        let conn = open_existing(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM albums", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_existing_errors_and_creates_no_file_for_a_missing_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "albumdb-test-open-existing-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("albums.db");
+
+        let result = open_existing(&db_path);
+        assert!(result.is_err());
+        assert!(!db_path.exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }
