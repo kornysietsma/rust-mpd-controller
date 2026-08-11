@@ -6,11 +6,11 @@
 //! `docs/album-database.md`'s "The menu-bar app's read/write path" for the
 //! write semantics and the `data_version` polling design.
 //!
-//! Not unit-tested: the worker loop, `Worker::poll`, and the `data_version`
-//! polling all need a real (or at least real-ish) SQLite connection and a
-//! live timer, which is what running the app and verifying by hand is for.
-//! `albumdb`'s own test suite already covers the storage calls this module
-//! wraps.
+//! `Worker` is tested below against a real `albums.db` in a temp directory —
+//! `open_existing` needs a file on disk, but nothing here needs a clock or a
+//! GUI, so the request handling, the poll's dedup, and the reconnect path are
+//! all reachable. Only `run`'s `recv_timeout` loop is left to manual
+//! verification, since that's the one part that needs a live timer.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -43,8 +43,8 @@ pub enum AlbumRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumInfo {
     pub year: Option<String>,
-    /// `Option`, unlike `SetRating`'s `u8`: unrated is a state we display
-    /// (1470 albums today) even though the menu cannot set it.
+    /// `Option`, unlike `SetRating`'s `u8`: unrated is a state we display —
+    /// most of the library, in practice — even though the menu cannot set it.
     pub rating: Option<u8>,
     pub relisten: bool,
     pub classical: bool,
@@ -127,6 +127,15 @@ impl Worker {
             self.conn = Some(albumdb::open_existing(&self.db_path)?);
         }
         Ok(self.conn.as_ref().expect("just set above"))
+    }
+
+    /// Drops the connection so the next operation opens a fresh one. Clearing
+    /// `last_data_version` alongside it is the load-bearing half: the pragma
+    /// is a per-connection sequence, so a value read from the old connection
+    /// is meaningless against the new one and must never be compared to it.
+    fn drop_connection(&mut self) {
+        self.conn = None;
+        self.last_data_version = None;
     }
 
     fn handle(&mut self, request: AlbumRequest, on_event: &impl Fn(AlbumEvent)) {
@@ -219,7 +228,7 @@ impl Worker {
             Ok(None) => AlbumState::NotFound,
             Err(e) => {
                 warn!("failed to read album row for {path:?}: {e:#}");
-                self.conn = None;
+                self.drop_connection();
                 AlbumState::Unavailable
             }
         }
@@ -251,8 +260,7 @@ impl Worker {
             }
             Err(e) => {
                 warn!("data_version pragma failed, dropping connection: {e:#}");
-                self.conn = None;
-                self.last_data_version = None;
+                self.drop_connection();
                 self.emit_if_changed(AlbumState::Unavailable, on_event);
             }
         }
@@ -279,5 +287,269 @@ pub fn run(db_path: PathBuf, rx: Receiver<AlbumRequest>, on_event: impl Fn(Album
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    const ALBUM: &str = "Albums/A/Artist/Album";
+
+    /// A worker pointed at a fresh on-disk database holding one album, plus
+    /// the directory to clean up. On disk rather than `:memory:` because
+    /// `open_existing` takes a path — and because the poll's whole subject is
+    /// what *another* connection to the same file did.
+    ///
+    /// `name` must be distinct per test: these run concurrently, and a
+    /// timestamp alone isn't fine-grained enough to keep two of them from
+    /// landing in the same directory and trampling each other's schema.
+    fn worker_with_one_album(name: &str) -> (Worker, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "controller-album-test-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("albums.db");
+
+        let conn = albumdb::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO albums
+                 (path, first_seen, last_seen, track_count, tag_state, original_date, rating)
+             VALUES (?1, 'now', 'now', 10, 'clean', '1996-05-12', 4)",
+            [ALBUM],
+        )
+        .unwrap();
+        drop(conn);
+
+        (Worker::new(db_path), dir)
+    }
+
+    /// Collects what the worker emits, so a test can assert on the sequence
+    /// rather than just the final state — the dedup tests are about how many
+    /// events arrive, not only their contents.
+    #[derive(Default)]
+    struct Events(RefCell<Vec<AlbumEvent>>);
+
+    impl Events {
+        fn sink(&self) -> impl Fn(AlbumEvent) + '_ {
+            move |event| self.0.borrow_mut().push(event)
+        }
+
+        fn take(&self) -> Vec<AlbumEvent> {
+            self.0.borrow_mut().drain(..).collect()
+        }
+    }
+
+    fn set_current(worker: &mut Worker, events: &Events, path: Option<&str>) {
+        worker.handle(
+            AlbumRequest::SetCurrentAlbum(path.map(str::to_string)),
+            &events.sink(),
+        );
+    }
+
+    #[test]
+    fn set_current_album_emits_the_row_it_finds() {
+        let (mut worker, dir) = worker_with_one_album("emits-row");
+        let events = Events::default();
+
+        set_current(&mut worker, &events, Some(ALBUM));
+
+        let emitted = events.take();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(
+            emitted[0],
+            AlbumEvent {
+                state: AlbumState::Found(AlbumInfo {
+                    year: Some("1996".to_string()),
+                    rating: Some(4),
+                    relisten: false,
+                    classical: false,
+                    spoken: false,
+                    soundtrack: false,
+                }),
+                write_error: None,
+            }
+        );
+
+        set_current(&mut worker, &events, Some("Albums/Z/Nobody/Nothing"));
+        assert_eq!(events.take()[0].state, AlbumState::NotFound);
+
+        set_current(&mut worker, &events, None);
+        assert_eq!(events.take()[0].state, AlbumState::NoAlbum);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_write_is_followed_by_a_re_read_of_what_landed() {
+        let (mut worker, dir) = worker_with_one_album("write-re-read");
+        let events = Events::default();
+        set_current(&mut worker, &events, Some(ALBUM));
+        events.take();
+
+        worker.handle(
+            AlbumRequest::SetFlag {
+                path: ALBUM.to_string(),
+                flag: AlbumFlag::Classical,
+                value: true,
+            },
+            &events.sink(),
+        );
+
+        let emitted = events.take();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].write_error, None);
+        let AlbumState::Found(info) = &emitted[0].state else {
+            panic!("expected Found, got {:?}", emitted[0].state);
+        };
+        assert!(info.classical);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_write_is_sticky_until_the_next_successful_one() {
+        let (mut worker, dir) = worker_with_one_album("write-sticky");
+        let events = Events::default();
+        set_current(&mut worker, &events, Some(ALBUM));
+        events.take();
+
+        // No row at this path — the album vanished between the menu being
+        // built and the click landing.
+        worker.handle(
+            AlbumRequest::SetRating {
+                path: "Albums/Z/Nobody/Nothing".to_string(),
+                rating: 5,
+            },
+            &events.sink(),
+        );
+        assert!(events.take()[0].write_error.is_some());
+
+        // The error rides along on an unrelated emit, not just the one from
+        // the write that caused it.
+        set_current(&mut worker, &events, Some(ALBUM));
+        assert!(events.take()[0].write_error.is_some());
+
+        worker.handle(
+            AlbumRequest::SetRating {
+                path: ALBUM.to_string(),
+                rating: 5,
+            },
+            &events.sink(),
+        );
+        assert_eq!(events.take()[0].write_error, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn setting_a_rating_clears_relisten_in_the_emitted_state() {
+        let (mut worker, dir) = worker_with_one_album("rating-clears-relisten");
+        let events = Events::default();
+        set_current(&mut worker, &events, Some(ALBUM));
+        worker.handle(
+            AlbumRequest::SetFlag {
+                path: ALBUM.to_string(),
+                flag: AlbumFlag::Relisten,
+                value: true,
+            },
+            &events.sink(),
+        );
+        events.take();
+
+        worker.handle(
+            AlbumRequest::SetRating {
+                path: ALBUM.to_string(),
+                rating: 2,
+            },
+            &events.sink(),
+        );
+
+        let AlbumState::Found(info) = &events.take()[0].state else {
+            panic!("expected Found");
+        };
+        assert_eq!(info.rating, Some(2));
+        assert!(!info.relisten, "rating an album supersedes needs_relisten");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poll_emits_only_when_another_connection_changed_the_row() {
+        let (mut worker, dir) = worker_with_one_album("poll-dedupe");
+        let events = Events::default();
+        set_current(&mut worker, &events, Some(ALBUM));
+        events.take();
+
+        worker.poll(&events.sink());
+        worker.poll(&events.sink());
+        assert!(
+            events.take().is_empty(),
+            "an unchanged database must not churn the menu"
+        );
+
+        let other = albumdb::open_existing(&dir.join("albums.db")).unwrap();
+        other
+            .execute("UPDATE albums SET is_spoken = 1", [])
+            .unwrap();
+        drop(other);
+
+        worker.poll(&events.sink());
+        let emitted = events.take();
+        assert_eq!(emitted.len(), 1);
+        let AlbumState::Found(info) = &emitted[0].state else {
+            panic!("expected Found");
+        };
+        assert!(info.spoken);
+
+        // A write elsewhere in the database moves `data_version` but leaves
+        // the watched row alone — re-read, but nothing to emit.
+        let other = albumdb::open_existing(&dir.join("albums.db")).unwrap();
+        other
+            .execute(
+                "INSERT INTO albums (path, first_seen, last_seen, track_count, tag_state)
+                 VALUES ('Albums/B/Other/Album', 'now', 'now', 1, 'clean')",
+                [],
+            )
+            .unwrap();
+        drop(other);
+
+        worker.poll(&events.sink());
+        assert!(events.take().is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dropping_the_connection_forgets_the_data_version_it_was_read_from() {
+        // `data_version` is a per-connection sequence, so a value carried
+        // across a reconnect could match the new connection's by coincidence
+        // and make `poll` skip a re-read forever. Every path that drops the
+        // connection must clear it.
+        let (mut worker, dir) = worker_with_one_album("drop-conn");
+        let events = Events::default();
+        set_current(&mut worker, &events, Some(ALBUM));
+        worker.poll(&events.sink());
+        events.take();
+        assert!(worker.last_data_version.is_some());
+
+        let other = albumdb::open_existing(&dir.join("albums.db")).unwrap();
+        other.execute("DROP TABLE albums", []).unwrap();
+        drop(other);
+
+        assert_eq!(worker.read_state(), AlbumState::Unavailable);
+        assert!(worker.conn.is_none());
+        assert!(worker.last_data_version.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

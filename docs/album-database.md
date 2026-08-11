@@ -132,10 +132,28 @@ crosses a thread boundary once opened).
   `open` (including the `journal_mode = DELETE` reset above), since a
   database a GUI tool left in WAL should be converted back regardless of
   which function opened it.
+- **Looks the row up by exact path, with no normalisation or fallback.** An
+  MPD song URL's parent directory *is* the `albums.path` value — measured
+  across the whole library, the two sets matched exactly (1,886 each, zero on
+  either side only). So the lookup is
+  `find_by_path(conn, menu::album_key(url))` and nothing more; if that ever
+  starts missing, something upstream has drifted and fuzzy-matching would
+  only hide it.
 - **Polls `PRAGMA data_version` every 3 seconds** to notice edits made by
   anything else — `album-tool`, a GUI tool, hand SQL — and re-reads the
   current album's row only when it changes. A menu click gets an immediate,
-  unconditional read/write instead of waiting for the next tick.
+  unconditional read/write instead of waiting for the next tick. Reading the
+  pragma also refreshes the connection's view, so the new value is visible to
+  the very next `SELECT`.
+- **Shows `original_date`'s year, falling back to `date`'s.** Not
+  interchangeable: the two give a different *year* on 365 albums (19%) — e.g.
+  Alice Cooper's *Welcome to My Nightmare* is `date = 1987`,
+  `original_date = 1975-03-11` — and the original is the one worth seeing.
+  (The baseline table below counts 421; that's any difference in the full
+  date string, so it's the larger number. Both are correct.) The fallback
+  earns its keep too: 57 albums have only `date`. No album has
+  `original_date` without `date`, but `menu::year_of` handles that anyway
+  rather than depending on it.
 - **The only writes it can make**: `set_rating` (rating 0–5, never `NULL` —
   there's no "clear rating" item in the menu) and `set_flag` (the four
   boolean columns). `set_rating` also clears `needs_relisten` in the same
@@ -150,6 +168,48 @@ crosses a thread boundary once opened).
 - Every write is followed by a re-read, so a failed write is self-evident in
   the menu — the tick you clicked simply isn't there — without the app having
   to reason about partial failure separately.
+
+### Why `data_version` and not `stat()`
+
+Both candidates were measured on a copy of the real database. Both fire
+exactly on another process's commit, and neither false-positives on reads or
+on empty commits — so the choice comes down to the two rows in bold, not to
+cost:
+
+| Event | `stat()` | `PRAGMA data_version` |
+|---|---|---|
+| Our own write | fires (noise) | silent — correct, we handle it directly |
+| Another process commits | fires | fires |
+| Another process only reads | silent | silent |
+| Zero-row `UPDATE` (empty commit) | silent | silent |
+| Mid-transaction, uncommitted | silent | silent |
+| **File replaced (new inode)** | fires | **blind** |
+| **Commit while the file is in WAL mode** | **blind** | fires |
+| Cost per tick | 12 µs | 54 µs |
+
+WAL is the case that actually happens — a GUI tool left in WAL mode is a
+documented hazard above — so `data_version` wins, and being blind to a
+*replaced* file is the accepted cost: restore `albums.db` from a backup and
+you must restart the app. That limitation is in the README for users.
+
+The mid-transaction row holds because the whole database is 467 pages against
+SQLite's default 2 MB page cache, so nothing reaches the main file before
+commit. That margin is thinner than it looks — past roughly 2 MB a large
+`album-tool scan` transaction could start spilling — but it doesn't affect
+the chosen design, which never looks at file metadata at all.
+
+**`data_version` is a per-*connection* sequence.** It only promises that two
+reads *from the same connection* differ when someone else committed in
+between; values from two different connections are unrelated. So every path
+that drops the connection must forget the remembered value too, or the first
+poll on the reconnected one can match by coincidence and skip a re-read —
+that's what `Worker::drop_connection` is for.
+
+### Why the poll exists at all
+
+There is no menu-open hook to refresh from instead — see
+[implementation-details.md](implementation-details.md#there-is-no-menu-open-hook).
+Freshness has to come from something running *ahead* of the click.
 
 ## The measured baseline
 

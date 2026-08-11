@@ -178,9 +178,9 @@ errors.
 cargo test
 ```
 
-Unit tests only, covering the pure bits that are easy to get wrong: URL decode
-→ tokenise → command parse, config loading and defaults, menu display logic
-(title truncation, paused prefix, icon/state selection), album traversal
+Mostly unit tests, covering the pure bits that are easy to get wrong: URL
+decode → tokenise → command parse, config loading and defaults, menu display
+logic (title truncation, paused prefix, icon/state selection), album traversal
 (run detection, jump targets, labels), the album-database section's display
 logic (year extraction, star rendering, summary-row assembly, `rating:`/
 `flag:` id round-tripping), playlist membership, menu-id round-tripping, and
@@ -188,10 +188,15 @@ the copy rows' URI encoding — including a round trip back out through URL
 parse → percent-decode → tokenise, which is the only thing holding the two
 ends of that format together.
 
-There is no GUI or integration test harness — see
-[docs/architecture.md](docs/architecture.md) for why, and
-[docs/implementation-details.md](docs/implementation-details.md) for how the
-untested paths were verified by hand instead.
+The exception is the album-database worker, which is tested against a real
+SQLite database in a temp directory — writes, the poll's change detection, and
+the reconnect path, with a second connection playing the part of `album-tool`
+editing the file underneath it.
+
+There is no GUI test harness, and nothing talks to a live MPD under `cargo
+test` — see [docs/architecture.md](docs/architecture.md) for why, and
+[docs/implementation-details.md](docs/implementation-details.md) for how those
+paths were verified by hand instead.
 
 ## License
 

@@ -123,3 +123,12 @@ plain primitives, fully unit tested — while `menu::render` is thin,
 decision-free item construction that just isn't covered by `cargo test`.
 Those paths, and everything needing a live MPD, were verified by hand instead
 (see [implementation-details.md](implementation-details.md)).
+
+That limit is specific to `muda`, and shouldn't be over-generalised to the
+rest of the app. The album-db worker looks similarly awkward — a background
+thread, a database, a timer — but only its `run` loop actually needs the
+timer: `Worker`'s request handling, poll dedup and reconnect path are all
+plain methods, and `album.rs`'s own tests drive them against a real
+`albums.db` in a temp directory, including a second connection standing in for
+`album-tool`. Before assuming something here can't be tested, check whether
+it's really `muda`, or just untested.

@@ -1,24 +1,29 @@
 # Agent notes
 
-A Cargo workspace with three crates:
+A Cargo workspace with four crates:
 
 - `crates/controller` — a macOS menu-bar MPD controller plus an `mpdcontrol://`
   URL scheme. Complete and in daily use: playback controls, album traversal,
   playlist membership and "Add to", copy-URI rows for the current track and
-  album, plus the URL scheme.
+  album, the current album's rating/category flags read and written straight
+  from the menu, plus the URL scheme.
 - `crates/albumdb` — the SQLite album database: schema, domain types, and all
-  the pure derivation logic.
+  the pure derivation logic. `controller` depends on it for exactly one thing,
+  `src/album.rs`'s worker thread; everything else about the album side is
+  independent of the menu-bar app.
 - `crates/album-tool` — the `scan`/`sync`/`status` CLI that maintains it.
 - `crates/mpd-conf` — parses MPD's own `mpd.conf`. Both binaries infer the MPD
   port, and the album database's location, from it rather than being told
   twice. Returns `music_directory` as an `Option`: `album-tool` requires it,
   the menu-bar app doesn't.
 
-See `README.md` for architecture and usage, `docs/implementation-details.md`
-for the non-obvious details behind the controller — including the measured
-evidence behind the album-grouping and run-length rules, which should not be
-re-derived or "tuned" without re-measuring — and `docs/album-database.md` for
-the same for the album database.
+`README.md` is the front door. Beyond it: `docs/architecture.md` for module
+and threading layout, `docs/usage.md` for the menu and URL scheme as a user
+meets them, `docs/implementation-details.md` for the non-obvious details
+behind the controller, and `docs/album-database.md` for the same on the album
+database. The last two hold the measured evidence behind the album-grouping,
+run-length, and change-detection rules — **don't re-derive or "tune" any of
+those without re-measuring.**
 
 Scope is deliberately personal-tool-sized: prefer simple working code over
 exhaustive coverage, and don't design in speculative complexity. Ideas that
@@ -116,7 +121,12 @@ Known gotchas already found this way, so you don't have to re-derive them:
   Confirmed live via `CurrentSong`: `OriginalDate` and
   `Other("MUSICBRAINZ_RELEASEGROUPID")` both came through correctly on the
   same song. No need to special-case tags the enum doesn't know about.
-- `rusqlite` 0.40.1's `bundled` feature compiles `libsqlite3-sys` 0.38.1,
+- **`PRAGMA data_version` is a per-*connection* sequence** — values from two
+  different connections are unrelated and must never be compared, which is
+  why dropping the connection has to forget the remembered value too. Why it
+  was chosen over `stat()` at all, with the measurements, is in
+  `docs/album-database.md`.
+- `rusqlite`'s `bundled` feature compiles `libsqlite3-sys` 0.38.1,
   whose build script uses `cfg_select!` — stable only on Rust ~1.97+. On an
   older stable toolchain (seen: 1.92.0) the build fails with "use of unstable
   library feature `cfg_select`". Fix: `rustup update`. Not a code issue.

@@ -68,10 +68,11 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rusqlite::params;
 
-    #[test]
-    fn opening_twice_is_idempotent_and_preserves_data() {
+    /// A unique, existing directory for one test's `albums.db`. Unique per
+    /// process *and* per call, since these tests run concurrently.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "albumdb-test-idempotent-{}-{}",
+            "albumdb-test-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -79,6 +80,12 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn opening_twice_is_idempotent_and_preserves_data() {
+        let dir = temp_dir("idempotent");
         let db_path = dir.join("albums.db");
 
         {
@@ -122,15 +129,7 @@ mod tests {
 
     #[test]
     fn journal_mode_on_disk_is_delete() {
-        let dir = std::env::temp_dir().join(format!(
-            "albumdb-test-journal-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("journal");
         let db_path = dir.join("albums.db");
 
         let conn = open(&db_path).unwrap();
@@ -148,15 +147,7 @@ mod tests {
 
     #[test]
     fn open_existing_succeeds_on_a_database_created_by_open() {
-        let dir = std::env::temp_dir().join(format!(
-            "albumdb-test-open-existing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("open-existing");
         let db_path = dir.join("albums.db");
 
         open(&db_path).unwrap();
@@ -171,15 +162,7 @@ mod tests {
 
     #[test]
     fn open_existing_errors_and_creates_no_file_for_a_missing_path() {
-        let dir = std::env::temp_dir().join(format!(
-            "albumdb-test-open-existing-missing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("open-existing-missing");
         let db_path = dir.join("albums.db");
 
         let result = open_existing(&db_path);

@@ -27,7 +27,7 @@ pub struct QueueEntry {
 /// A song's album identity: two queue entries are the same album
 /// iff they share a parent directory. Chosen over the `album`/`albumartist`
 /// tags, which merge albums with the same name (like "Peter Gabriel" self titled!)
-pub(crate) fn album_key(url: &str) -> Option<&str> {
+pub fn album_key(url: &str) -> Option<&str> {
     url.rsplit_once('/').map(|(dir, _)| dir)
 }
 
@@ -169,10 +169,7 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
 /// and `date` are always `YYYY`, `YYYY-MM` or `YYYY-MM-DD` — but guarded: only
 /// accepted if all four bytes are ASCII digits, so a malformed value degrades
 /// to "no year" rather than printing garbage into the menu bar.
-pub(crate) fn year_of<'a>(
-    original_date: Option<&'a str>,
-    date: Option<&'a str>,
-) -> Option<&'a str> {
+pub fn year_of<'a>(original_date: Option<&'a str>, date: Option<&'a str>) -> Option<&'a str> {
     fn year_prefix(s: &str) -> Option<&str> {
         let prefix = s.get(0..4)?;
         prefix.bytes().all(|b| b.is_ascii_digit()).then_some(prefix)
@@ -330,42 +327,19 @@ const SUMMARY_SEPARATOR: &str = " \u{00B7} "; // " · " (U+00B7 MIDDLE DOT)
 /// Five star glyphs for a `0`–`5` rating: `rating` filled stars followed by
 /// `5 - rating` empty ones. A stored value outside `0`–`5` can't happen — the
 /// schema's `CHECK` constraint prevents it — but must not panic here; it
-/// simply renders as all-filled rather than indexing out of bounds (spec
-/// §4.3).
-pub(crate) fn stars(rating: u8) -> String {
+/// simply renders as all-filled rather than indexing out of bounds.
+pub fn stars(rating: u8) -> String {
     (0..5)
         .map(|i| if i < rating { STAR_FILLED } else { STAR_EMPTY })
         .collect()
-}
-
-/// The `Album ▸` submenu's checked state, mirroring a database row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlbumControls {
-    pub rating: Option<u8>,
-    pub relisten: bool,
-    pub classical: bool,
-    pub spoken: bool,
-    pub soundtrack: bool,
-}
-
-impl AlbumControls {
-    fn from_info(info: &AlbumInfo) -> Self {
-        AlbumControls {
-            rating: info.rating,
-            relisten: info.relisten,
-            classical: info.classical,
-            spoken: info.spoken,
-            soundtrack: info.soundtrack,
-        }
-    }
 }
 
 /// Whether the `Rating ▸` submenu's `rating` item should render checked.
 /// Trivial, but pulled out of `render` anyway — per this module's own rule,
 /// decisions belong where they're testable, not inline in the
 /// main-thread-only render walk.
-pub(crate) fn rating_checked(controls: &AlbumControls, rating: u8) -> bool {
-    controls.rating == Some(rating)
+pub fn rating_checked(info: &AlbumInfo, rating: u8) -> bool {
+    info.rating == Some(rating)
 }
 
 /// Everything the album-database part of the menu needs: the disabled
@@ -377,13 +351,14 @@ pub struct AlbumSection {
     pub summary: Option<String>,
     /// A disabled notice row (unavailable / write failed).
     pub notice: Option<String>,
-    /// `None` means emit no `Album ▸` submenu.
-    pub controls: Option<AlbumControls>,
+    /// The row the `Album ▸` submenu's checkmarks mirror; `None` means emit
+    /// no submenu at all.
+    pub controls: Option<AlbumInfo>,
 }
 
 impl AlbumSection {
-    /// No summary, no notice, no submenu — nothing playing, or a
-    /// library-root file with no parent directory.
+    /// No summary, no notice, no submenu — the album database has nothing to
+    /// say about what's playing, or hasn't been asked yet.
     pub fn empty() -> Self {
         AlbumSection {
             summary: None,
@@ -404,7 +379,7 @@ impl AlbumSection {
 /// flag words, joined with `" · "` in that fixed order. `None` when every
 /// part is absent — an unrated, undated, unflagged album gets no summary row
 /// at all, not an empty one. See `docs/usage.md` for the rendered examples.
-pub(crate) fn album_summary(info: &AlbumInfo) -> Option<String> {
+pub fn album_summary(info: &AlbumInfo) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(year) = &info.year {
         parts.push(year.clone());
@@ -435,7 +410,7 @@ const NOT_FOUND_SUMMARY: &str = "not in album database";
 /// the menu shows. `write_error` takes priority over the state-derived
 /// notice — it persists until the next successful write, covering the case
 /// where the row is still readable but the last click didn't take.
-pub(crate) fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection {
+pub fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection {
     let notice = if write_error.is_some() {
         Some(WRITE_FAILED_NOTICE.to_string())
     } else if matches!(state, AlbumState::Unavailable) {
@@ -447,7 +422,7 @@ pub(crate) fn album_section(state: &AlbumState, write_error: Option<&str>) -> Al
     let (summary, controls) = match state {
         AlbumState::NoAlbum | AlbumState::Unavailable => (None, None),
         AlbumState::NotFound => (Some(NOT_FOUND_SUMMARY.to_string()), None),
-        AlbumState::Found(info) => (album_summary(info), Some(AlbumControls::from_info(info))),
+        AlbumState::Found(info) => (album_summary(info), Some(info.clone())),
     };
 
     AlbumSection {
@@ -486,19 +461,22 @@ impl MenuModel {
         }
     }
 
-    /// Whether the album-nav section (and the separator preceding it) should
-    /// be emitted at all. Lives here rather than
-    /// in `render`, which can't be tested (see the module note on
-    /// `muda::Menu` being main-thread-only). Derived rather than stored, so
-    /// it can't drift from the fields it's computed from.
-    pub fn show_album_section(&self) -> bool {
+    /// Whether the album-*navigation* section (and the separator preceding
+    /// it) should be emitted at all — the prev/next rows, not `album_section`,
+    /// which is the album *database* row. Distinct from the free
+    /// `show_album_nav` above, which decides whether the jumps are worth
+    /// computing in the first place; this one only asks whether any survived.
+    /// Lives here rather than in `render`, which can't be tested (see the
+    /// module note on `muda::Menu` being main-thread-only). Derived rather
+    /// than stored, so it can't drift from the fields it's computed from.
+    pub fn show_album_nav_section(&self) -> bool {
         self.prev_album.is_some() || self.next_album.is_some()
     }
 
     /// Whether the current-track section (the track and album-title copy
     /// rows, "In playlists", "Add to", and the album-database section) and
     /// its preceding separator should be emitted. Same rule and same
-    /// reasoning as `show_album_section`. A `notice`-only row (e.g. "album
+    /// reasoning as `show_album_nav_section`. A `notice`-only row (e.g. "album
     /// database unavailable") still needs the section to show even with
     /// nothing else in it, so `AlbumSection::is_empty` covers all three of
     /// its fields, not just `controls`.
@@ -715,7 +693,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
         None,
     ))?;
 
-    if model.show_album_section() {
+    if model.show_album_nav_section() {
         menu.append(&PredefinedMenuItem::separator())?;
         if let Some(jump) = &model.prev_album {
             menu.append(&MenuItem::with_id(
@@ -874,24 +852,17 @@ mod tests {
     }
 
     #[test]
-    fn year_of_extracts_from_each_stored_date_format() {
+    fn year_of_prefers_original_date_and_rejects_unusable_values() {
+        // Every format the two columns are stored in.
         assert_eq!(year_of(Some("1996"), None), Some("1996"));
         assert_eq!(year_of(Some("1996-05"), None), Some("1996"));
         assert_eq!(year_of(Some("1996-05-12"), None), Some("1996"));
-    }
 
-    #[test]
-    fn year_of_falls_back_to_date_when_original_date_is_absent() {
         assert_eq!(year_of(None, Some("2003-01-01")), Some("2003"));
-    }
-
-    #[test]
-    fn year_of_is_none_when_both_are_absent() {
         assert_eq!(year_of(None, None), None);
-    }
 
-    #[test]
-    fn year_of_rejects_a_non_numeric_leading_four_characters() {
+        // A non-numeric leading four characters falls through to `date`, and
+        // then to `None` — never into the menu.
         assert_eq!(year_of(Some("abcd-05"), Some("2003")), Some("2003"));
         assert_eq!(year_of(Some("abcd"), None), None);
     }
@@ -1255,19 +1226,19 @@ mod tests {
         // Both false means `render` emits no separator for either section —
         // the "never two adjacent separators" rule.
         let model = model_with(None, None, vec![], vec![]);
-        assert!(!model.show_album_section());
+        assert!(!model.show_album_nav_section());
         assert!(!model.show_track_section());
     }
 
     #[test]
-    fn album_section_shows_when_either_jump_is_present() {
-        assert!(model_with(None, Some(a_jump()), vec![], vec![]).show_album_section());
+    fn album_nav_shows_when_either_jump_is_present() {
+        assert!(model_with(None, Some(a_jump()), vec![], vec![]).show_album_nav_section());
 
         let next_only = MenuModel {
             next_album: Some(a_jump()),
             ..model_with(None, None, vec![], vec![])
         };
-        assert!(next_only.show_album_section());
+        assert!(next_only.show_album_nav_section());
     }
 
     #[test]
@@ -1506,10 +1477,6 @@ mod tests {
             album_summary(&info(None, Some(0), false, false, false, false)),
             Some("☆☆☆☆☆".to_string())
         );
-        assert_eq!(
-            album_summary(&info(None, None, false, false, false, false)),
-            None
-        );
     }
 
     #[test]
@@ -1544,13 +1511,7 @@ mod tests {
         assert_eq!(section.notice, None);
         assert_eq!(
             section.controls,
-            Some(AlbumControls {
-                rating: Some(4),
-                relisten: false,
-                classical: false,
-                spoken: false,
-                soundtrack: false,
-            })
+            Some(info(Some("1996"), Some(4), false, false, false, false))
         );
     }
 
@@ -1573,18 +1534,12 @@ mod tests {
 
     #[test]
     fn rating_checked_matches_only_the_stored_rating() {
-        let unrated = AlbumControls {
-            rating: None,
-            relisten: false,
-            classical: false,
-            spoken: false,
-            soundtrack: false,
-        };
+        let unrated = info(None, None, false, false, false, false);
         for r in 0..=5 {
             assert!(!rating_checked(&unrated, r));
         }
 
-        let rated = AlbumControls {
+        let rated = AlbumInfo {
             rating: Some(3),
             ..unrated
         };

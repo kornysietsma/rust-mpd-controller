@@ -415,12 +415,16 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::Album(event)) => {
                 // Replaces only `model.album_section` — the rest of the menu
                 // is untouched, and the tray title never depends on album
-                // data.
-                model.album_section =
-                    menu::album_section(&event.state, event.write_error.as_deref());
-                match menu::render(&model) {
-                    Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
-                    Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
+                // data. Every `MpdEvent` also triggers a worker read, so most
+                // of these arrive alongside a rebuild that already happened
+                // with the same album data: re-render only on a real change.
+                let section = menu::album_section(&event.state, event.write_error.as_deref());
+                if section != model.album_section {
+                    model.album_section = section;
+                    match menu::render(&model) {
+                        Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
+                        Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
+                    }
                 }
             }
             _ => {}
