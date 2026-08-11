@@ -4,6 +4,7 @@
 #![warn(rust_2024_compatibility)]
 #![warn(deprecated_safe)]
 
+mod album;
 mod clipboard;
 mod command;
 mod config;
@@ -13,9 +14,10 @@ mod mpd;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use anyhow::{Context, Result, anyhow};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use mpd_client::client::Client;
 use mpd_client::commands::SongId;
 use mpd_client::responses::{PlayState, SongInQueue};
@@ -29,6 +31,7 @@ use tray_icon::menu::MenuEvent;
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 use url::Url;
 
+use crate::album::{AlbumEvent, AlbumRequest};
 use crate::mpd::MpdEvent;
 
 const URL_SCHEME: &str = "mpdcontrol";
@@ -83,6 +86,7 @@ enum UserEvent {
     TrayIconEvent,
     MenuEvent(MenuEvent),
     Mpd(MpdEvent),
+    Album(AlbumEvent),
 }
 
 /// Runs an MPD command on the tokio runtime without blocking the `tao` event
@@ -119,15 +123,56 @@ fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
         .collect()
 }
 
+/// Startup failed before there was a trustworthy `Config` to run on — put up
+/// an error icon and a menu with nothing but the failure and Quit, and skip
+/// MPD entirely, since connecting needs the same config that just failed.
+fn run_error_mode(err: config::ConfigError) -> Result<()> {
+    error!("startup failed: {err:#}");
+
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(UserEvent::MenuEvent(event));
+    }));
+
+    let message = err.to_string();
+    let log_path = log_file_path().ok();
+    let tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(menu::render_error(&message, log_path.as_deref())?))
+        .with_title(menu::error_title())
+        .with_tooltip(format!("MpdController: {message}"))
+        .build()?;
+
+    event_loop.run(move |event, _window_target, control_flow| {
+        *control_flow = ControlFlow::Wait;
+
+        if let Event::UserEvent(UserEvent::MenuEvent(menu_event)) = event
+            && menu_event.id == menu::QUIT_ID
+        {
+            info!("Quit selected, exiting");
+            *control_flow = ControlFlow::Exit;
+        }
+        let _ = &tray_icon;
+    });
+}
+
 fn main() -> Result<()> {
     init_logging()?;
     info!("MpdController starting");
 
-    let config = config::load()?;
+    let config = match config::load() {
+        Ok(config) => config,
+        Err(err) => return run_error_mode(err),
+    };
     debug!("Loaded config: {config:?}");
-    // Captured before `config` moves into `mpd::run` below — the event loop
-    // closure needs it on every menu rebuild.
+    // Both captured before `config` moves into `mpd::run` below — the event
+    // loop closure needs `key_playlists` on every menu rebuild, and
+    // `db_path` is handed to the album worker, which is a separate thread
+    // from `mpd::run`'s tokio task.
     let key_playlists = config.key_playlists.clone();
+    let db_path = config.db_path.clone();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -154,12 +199,32 @@ fn main() -> Result<()> {
         let _ = mpd_proxy.send_event(UserEvent::Mpd(event));
     }));
 
+    // A plain `std::thread`, not a tokio task: `album::run` blocks (SQLite,
+    // plus up to a 5s `busy_timeout`) and owns a `!Sync` `rusqlite::Connection`
+    // that must never leave the thread it was opened on. See
+    // docs/architecture.md's "A third thread" section.
+    let (album_tx, album_rx) = mpsc::channel::<AlbumRequest>();
+    let album_proxy = event_loop.create_proxy();
+    std::thread::spawn(move || {
+        album::run(db_path, album_rx, move |event| {
+            let _ = album_proxy.send_event(UserEvent::Album(event));
+        });
+    });
+
     let mut current_client: Option<Client> = None;
     let mut play_state = PlayState::Stopped;
     // The current song's URL, held across events so a click on an `addto:`
     // menu item (which arrives as its own `MenuEvent`, independent of any
     // fresh `MpdEvent`) can act on the song the menu was built from.
     let mut current_url: Option<String> = None;
+    // The album path the menu's `Album ▸` submenu was built from — same
+    // reasoning as `current_url`, but for `rating:`/`flag:` clicks.
+    let mut current_album_path: Option<String> = None;
+    // Rebuilt on both an `MpdEvent` and a `UserEvent::Album`, since either
+    // alone must be able to produce a complete menu: an `MpdEvent` rebuilds
+    // everything but carries the previous `album_section` forward, and a
+    // `UserEvent::Album` replaces only that field.
+    let mut model = menu::MenuModel::empty();
 
     event_loop.run(move |event, _window_target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -222,6 +287,31 @@ fn main() -> Result<()> {
                         Ok(()) => info!("copied {uri} to clipboard"),
                         Err(e) => warn!("failed to copy {uri} to clipboard: {e:#}"),
                     }
+                } else if let Some(rest) = menu::strip_rating_id(&menu_event.id.0) {
+                    // Not routed through `spawn_command`: this writes to
+                    // `albums.db` via the album-db worker, not to MPD.
+                    match (rest.parse::<u8>(), &current_album_path) {
+                        (Ok(rating), Some(path)) => {
+                            let _ = album_tx.send(AlbumRequest::SetRating {
+                                path: path.clone(),
+                                rating,
+                            });
+                        }
+                        (Err(e), _) => warn!("ignoring malformed rating id {rest:?}: {e}"),
+                        (_, None) => warn!("ignoring \"rating:{rest}\": no current album"),
+                    }
+                } else if let Some(rest) = menu::strip_flag_id(&menu_event.id.0) {
+                    match (menu::parse_flag_payload(rest), &current_album_path) {
+                        (Some((flag, value)), Some(path)) => {
+                            let _ = album_tx.send(AlbumRequest::SetFlag {
+                                path: path.clone(),
+                                flag,
+                                value,
+                            });
+                        }
+                        (None, _) => warn!("ignoring malformed flag id {rest:?}"),
+                        (_, None) => warn!("ignoring \"flag:{rest}\": no current album"),
+                    }
                 }
             }
             Event::Opened { urls } => {
@@ -244,7 +334,7 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::Mpd(mpd_event)) => {
-                let (title, built_menu) = match mpd_event {
+                let title = match mpd_event {
                     MpdEvent::Connected(snapshot, playlists, client) => {
                         debug!("MPD state: {:?}", snapshot.status.state);
                         play_state = snapshot.status.state;
@@ -284,7 +374,7 @@ fn main() -> Result<()> {
                             .filter(|name| playlists.names.contains(name))
                             .cloned()
                             .collect();
-                        let model = menu::model(
+                        let mut new_model = menu::model(
                             play_state,
                             snapshot.status.random,
                             &entries,
@@ -292,21 +382,49 @@ fn main() -> Result<()> {
                             &playlists_for_url,
                             &known_key_playlists,
                         );
-                        (title, menu::render(&model))
+                        // The album-db worker's state is independent of MPD's
+                        // — carry the previous value forward rather than
+                        // blanking the album section while the worker's
+                        // fresh read (triggered below) is still in flight.
+                        new_model.album_section = model.album_section.clone();
+                        model = new_model;
+                        title
                     }
                     MpdEvent::Disconnected => {
                         current_client = None;
                         current_url = None;
-                        (
-                            menu::disconnected_title(),
-                            menu::render(&menu::MenuModel::empty()),
-                        )
+                        model = menu::MenuModel::empty();
+                        menu::disconnected_title()
                     }
                 };
+                // Recomputed from `current_url` rather than duplicated per
+                // arm above: `None` for both "nothing playing" and a
+                // library-root file with no parent directory.
+                current_album_path = current_url
+                    .as_deref()
+                    .and_then(menu::album_key)
+                    .map(str::to_string);
+                let _ = album_tx.send(AlbumRequest::SetCurrentAlbum(current_album_path.clone()));
+
                 tray_icon.set_title(Some(&title));
-                match built_menu {
+                match menu::render(&model) {
                     Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
                     Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
+                }
+            }
+            Event::UserEvent(UserEvent::Album(event)) => {
+                // Replaces only `model.album_section` — the rest of the menu
+                // is untouched, and the tray title never depends on album
+                // data. Every `MpdEvent` also triggers a worker read, so most
+                // of these arrive alongside a rebuild that already happened
+                // with the same album data: re-render only on a real change.
+                let section = menu::album_section(&event.state, event.write_error.as_deref());
+                if section != model.album_section {
+                    model.album_section = section;
+                    match menu::render(&model) {
+                        Ok(built_menu) => tray_icon.set_menu(Some(Box::new(built_menu))),
+                        Err(e) => warn!("failed to rebuild tray menu: {e:#}"),
+                    }
                 }
             }
             _ => {}

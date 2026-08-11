@@ -1,0 +1,19 @@
+[package]
+name = "album-tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+albumdb = { path = "../albumdb" }
+anyhow.workspace = true
+clap = { version = "4.6.6", features = ["derive"] }
+mpd-conf = { path = "../mpd-conf" }
+mpd_client.workspace = true
+musicbrainz_rs = { version = "0.13.0", features = ["async"] }
+time = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true

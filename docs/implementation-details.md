@@ -171,6 +171,26 @@ does work when running from a dev shell).
   was a direct dependency until the post-review cleanup; the removal is
   deliberate.
 
+### There is no menu-open hook
+
+Checked in `tray-icon` 0.24.2 (`src/platform_impl/macos/mod.rs`): `mouseDown:`
+sends the click event and then immediately calls `on_tray_click` →
+`performClick`, which opens the menu in a **modal tracking loop**. Our click
+arrives via `EventLoopProxy::send_event`, so the `tao` event loop cannot
+process it until after the menu closes. `muda` exposes no menu-delegate
+callback either — `tray-icon` already installs the status item as the `NSMenu`
+delegate and doesn't forward `menuNeedsUpdate:`.
+
+Two consequences, both load-bearing:
+
+- **The menu cannot be refreshed at the moment it opens.** Freshness has to
+  come from something running ahead of the click — which is why the album-db
+  worker polls on a timer rather than reading on demand.
+- **The menu cannot change while it is displayed.** Events arriving during the
+  modal loop are queued and applied after it closes. That's why the album
+  submenu needs no optimistic UI: clicking an item closes the menu, and the
+  rebuild happens while it's shut.
+
 ## `PlayerSnapshot` and `PlaylistCache` are separate, independently refreshed
 
 `mpd.rs` holds two caches, not one, because they change for different
@@ -323,6 +343,40 @@ dropped and the click has to be repeated. It predates the copy rows, but they
 make it far easier to hit, since pasting links into notes is exactly the
 "app might not be running" case. The fix would be to hold URLs that arrive
 while `current_client` is `None` and drain them on the next `Connected`.
+
+v4 (the album-database section: summary row, `Album ▸` submenu, ratings and
+flags) was walked through live against the **real** `albums.db`, backed up
+first. Rating and flag clicks landed correctly in SQL, the rating/relisten
+interaction behaved as documented, and both an `album-tool scan` and a direct
+`sqlite3` edit made from outside the app showed up within the ~3 s poll
+interval. Playback controls kept working throughout, which was the thing most
+at risk from adding a third thread.
+
+One result differed from what the checklist expected, for a reason worth
+recording:
+
+- **`chmod 000 albums.db` had no visible effect until the app was
+  restarted**, at which point "album database unavailable" appeared, and
+  cleared again once the mode bits were restored. That is POSIX file
+  semantics, not a gap in the polling design: permission bits are only
+  checked at `open()`, so an already-open connection's reads keep succeeding
+  regardless of what happens to the mode bits underneath it. No code change
+  was indicated — the real-world equivalent (database missing or unreadable
+  at startup) is covered by the `open_existing`-fails-cleanly path, which the
+  restart exercised.
+
+Two checks were deliberately skipped rather than failed: the WAL-detection
+path (judged not worth the setup by hand; re-run it if `data_version` polling
+is ever suspect), and the library-root-file case, which isn't practically
+playable via `mpc` in this setup — its pure-logic equivalent
+(`album_copy_row_is_absent_for_a_library_root_file`) is covered by
+`cargo test` instead.
+
+Unlike v2, this pass found no bugs. The one that *was* found in this work came
+out of code review rather than live use — a `PRAGMA data_version` value
+retained across a reconnect, which would have shown up only rarely and
+transiently. See
+[album-database.md](album-database.md#why-data_version-and-not-stat).
 
 `tray-icon`'s known cosmetic quirks (icon rendering, an occasional double icon
 on some macOS versions) were not encountered on the macOS version in use.

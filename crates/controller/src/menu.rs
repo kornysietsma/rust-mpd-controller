@@ -1,9 +1,13 @@
+use std::path::Path;
+
+use albumdb::AlbumFlag;
 use anyhow::Result;
 use mpd_client::responses::PlayState;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::URL_SCHEME;
+use crate::album::{AlbumInfo, AlbumState};
 use crate::mpd::PlayerSnapshot;
 
 pub const PLAY_PAUSE_ID: &str = "play_pause";
@@ -23,7 +27,7 @@ pub struct QueueEntry {
 /// A song's album identity: two queue entries are the same album
 /// iff they share a parent directory. Chosen over the `album`/`albumartist`
 /// tags, which merge albums with the same name (like "Peter Gabriel" self titled!)
-fn album_key(url: &str) -> Option<&str> {
+pub fn album_key(url: &str) -> Option<&str> {
     url.rsplit_once('/').map(|(dir, _)| dir)
 }
 
@@ -125,6 +129,8 @@ fn prev_album_jump(queue: &[QueueEntry], current_pos: usize) -> Option<AlbumJump
 
 const EMPTY_QUEUE_ICON: &str = "♫";
 const DISCONNECTED_ICON: &str = "🔇";
+// Pinned to text presentation for the same reason as `PAUSED_ICON` below.
+const ERROR_ICON: &str = "\u{26A0}\u{FE0E}";
 // Pinned to text presentation with U+FE0E, as the menu glyphs below
 // are, so it renders monochrome and narrow rather than as wide colour emoji.
 const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
@@ -155,6 +161,24 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
     truncated
 }
 
+/// The year to show for an album: `original_date`'s year, falling back to
+/// `date`'s year, `None` if neither is present or usable. `album.rs`'s
+/// worker calls this to populate `AlbumInfo::year` from a database row.
+///
+/// Extraction is just the first four bytes of the string — `original_date`
+/// and `date` are always `YYYY`, `YYYY-MM` or `YYYY-MM-DD` — but guarded: only
+/// accepted if all four bytes are ASCII digits, so a malformed value degrades
+/// to "no year" rather than printing garbage into the menu bar.
+pub fn year_of<'a>(original_date: Option<&'a str>, date: Option<&'a str>) -> Option<&'a str> {
+    fn year_prefix(s: &str) -> Option<&str> {
+        let prefix = s.get(0..4)?;
+        prefix.bytes().all(|b| b.is_ascii_digit()).then_some(prefix)
+    }
+    original_date
+        .and_then(year_prefix)
+        .or_else(|| date.and_then(year_prefix))
+}
+
 pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[String]) -> String {
     let truncated = truncate(&format_track(title, url, artists), TITLE_MAX_CHARS);
     if state == PlayState::Paused {
@@ -170,6 +194,10 @@ pub fn empty_queue_title() -> String {
 
 pub fn disconnected_title() -> String {
     DISCONNECTED_ICON.to_string()
+}
+
+pub fn error_title() -> String {
+    ERROR_ICON.to_string()
 }
 
 pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
@@ -289,16 +317,132 @@ fn album_nav(
     (prev_album_jump(queue, pos), next_album_jump(queue, pos))
 }
 
+// No variation selector needed on any of these — U+2605, U+2606 and U+21BB
+// have no emoji presentation form, unlike the icons above.
+const STAR_FILLED: char = '\u{2605}'; // ★
+const STAR_EMPTY: char = '\u{2606}'; // ☆
+const RELISTEN_ICON: char = '\u{21BB}'; // ↻
+const SUMMARY_SEPARATOR: &str = " \u{00B7} "; // " · " (U+00B7 MIDDLE DOT)
+
+/// Five star glyphs for a `0`–`5` rating: `rating` filled stars followed by
+/// `5 - rating` empty ones. A stored value outside `0`–`5` can't happen — the
+/// schema's `CHECK` constraint prevents it — but must not panic here; it
+/// simply renders as all-filled rather than indexing out of bounds.
+pub fn stars(rating: u8) -> String {
+    (0..5)
+        .map(|i| if i < rating { STAR_FILLED } else { STAR_EMPTY })
+        .collect()
+}
+
+/// Whether the `Rating ▸` submenu's `rating` item should render checked.
+/// Trivial, but pulled out of `render` anyway — per this module's own rule,
+/// decisions belong where they're testable, not inline in the
+/// main-thread-only render walk.
+pub fn rating_checked(info: &AlbumInfo, rating: u8) -> bool {
+    info.rating == Some(rating)
+}
+
+/// Everything the album-database part of the menu needs: the disabled
+/// summary/notice rows and the `Album ▸` submenu. Built from an `AlbumState`
+/// by `album_section`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumSection {
+    /// The summary row text; `None` means emit no row.
+    pub summary: Option<String>,
+    /// A disabled notice row (unavailable / write failed).
+    pub notice: Option<String>,
+    /// The row the `Album ▸` submenu's checkmarks mirror; `None` means emit
+    /// no submenu at all.
+    pub controls: Option<AlbumInfo>,
+}
+
+impl AlbumSection {
+    /// No summary, no notice, no submenu — the album database has nothing to
+    /// say about what's playing, or hasn't been asked yet.
+    pub fn empty() -> Self {
+        AlbumSection {
+            summary: None,
+            notice: None,
+            controls: None,
+        }
+    }
+
+    /// Whether every field is absent, i.e. this section contributes nothing
+    /// to the menu. A `notice`-only section (e.g. "album database
+    /// unavailable") is *not* empty — it still needs its row.
+    pub fn is_empty(&self) -> bool {
+        self.summary.is_none() && self.notice.is_none() && self.controls.is_none()
+    }
+}
+
+/// The disabled summary row's text: year, star rating, relisten marker and
+/// flag words, joined with `" · "` in that fixed order. `None` when every
+/// part is absent — an unrated, undated, unflagged album gets no summary row
+/// at all, not an empty one. See `docs/usage.md` for the rendered examples.
+pub fn album_summary(info: &AlbumInfo) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(year) = &info.year {
+        parts.push(year.clone());
+    }
+    if let Some(rating) = info.rating {
+        parts.push(stars(rating));
+    }
+    if info.relisten {
+        parts.push(RELISTEN_ICON.to_string());
+    }
+    if info.classical {
+        parts.push("Classical".to_string());
+    }
+    if info.spoken {
+        parts.push("Spoken".to_string());
+    }
+    if info.soundtrack {
+        parts.push("Soundtrack".to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(SUMMARY_SEPARATOR))
+}
+
+const UNAVAILABLE_NOTICE: &str = "album database unavailable";
+const WRITE_FAILED_NOTICE: &str = "album database write failed";
+const NOT_FOUND_SUMMARY: &str = "not in album database";
+
+/// Maps the worker's `AlbumState` (plus any pending write error) onto what
+/// the menu shows. `write_error` takes priority over the state-derived
+/// notice — it persists until the next successful write, covering the case
+/// where the row is still readable but the last click didn't take.
+pub fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection {
+    let notice = if write_error.is_some() {
+        Some(WRITE_FAILED_NOTICE.to_string())
+    } else if matches!(state, AlbumState::Unavailable) {
+        Some(UNAVAILABLE_NOTICE.to_string())
+    } else {
+        None
+    };
+
+    let (summary, controls) = match state {
+        AlbumState::NoAlbum | AlbumState::Unavailable => (None, None),
+        AlbumState::NotFound => (Some(NOT_FOUND_SUMMARY.to_string()), None),
+        AlbumState::Found(info) => (album_summary(info), Some(info.clone())),
+    };
+
+    AlbumSection {
+        summary,
+        notice,
+        controls,
+    }
+}
+
 /// Everything needed to render the dropdown menu, computed from primitives so
 /// it's unit-testable without a live MPD connection. Carries no
 /// tray title — that's set independently via `Display`.
 pub struct MenuModel {
     pub track: Option<CopyRow>,
-    pub album: Option<CopyRow>,
+    pub album_title: Option<CopyRow>,
     pub prev_album: Option<AlbumJump>,
     pub next_album: Option<AlbumJump>,
     pub in_playlists: Vec<String>,
     pub add_to: Vec<String>,
+    pub album_section: AlbumSection,
 }
 
 impl MenuModel {
@@ -308,31 +452,40 @@ impl MenuModel {
     pub fn empty() -> Self {
         MenuModel {
             track: None,
-            album: None,
+            album_title: None,
             prev_album: None,
             next_album: None,
             in_playlists: Vec::new(),
             add_to: Vec::new(),
+            album_section: AlbumSection::empty(),
         }
     }
 
-    /// Whether the album-nav section (and the separator preceding it) should
-    /// be emitted at all. Lives here rather than
-    /// in `render`, which can't be tested (see the module note on
-    /// `muda::Menu` being main-thread-only). Derived rather than stored, so
-    /// it can't drift from the fields it's computed from.
-    pub fn show_album_section(&self) -> bool {
+    /// Whether the album-*navigation* section (and the separator preceding
+    /// it) should be emitted at all — the prev/next rows, not `album_section`,
+    /// which is the album *database* row. Distinct from the free
+    /// `show_album_nav` above, which decides whether the jumps are worth
+    /// computing in the first place; this one only asks whether any survived.
+    /// Lives here rather than in `render`, which can't be tested (see the
+    /// module note on `muda::Menu` being main-thread-only). Derived rather
+    /// than stored, so it can't drift from the fields it's computed from.
+    pub fn show_album_nav_section(&self) -> bool {
         self.prev_album.is_some() || self.next_album.is_some()
     }
 
-    /// Whether the current-track section (the track and album copy rows, "In
-    /// playlists", "Add to") and its preceding separator should be emitted.
-    /// Same rule and same reasoning as `show_album_section`.
+    /// Whether the current-track section (the track and album-title copy
+    /// rows, "In playlists", "Add to", and the album-database section) and
+    /// its preceding separator should be emitted. Same rule and same
+    /// reasoning as `show_album_nav_section`. A `notice`-only row (e.g. "album
+    /// database unavailable") still needs the section to show even with
+    /// nothing else in it, so `AlbumSection::is_empty` covers all three of
+    /// its fields, not just `controls`.
     pub fn show_track_section(&self) -> bool {
         self.track.is_some()
-            || self.album.is_some()
+            || self.album_title.is_some()
             || !self.in_playlists.is_empty()
             || !self.add_to.is_empty()
+            || !self.album_section.is_empty()
     }
 }
 
@@ -359,7 +512,7 @@ pub fn model(
     key_playlists: &[String],
 ) -> MenuModel {
     let track = current.as_ref().map(track_copy_row);
-    let album = current
+    let album_title = current
         .as_ref()
         .and_then(|current| album_copy_row(queue, current));
     let (prev_album, next_album) = album_nav(
@@ -371,11 +524,15 @@ pub fn model(
 
     MenuModel {
         track,
-        album,
+        album_title,
         prev_album,
         next_album,
         in_playlists: in_playlists_list(playlists_for_url),
         add_to: add_to_list(playlists_for_url, key_playlists),
+        // The caller (`main.rs`) carries the previous model's `album_section`
+        // forward across an `MpdEvent` — this constructor has no access to
+        // the album-db worker's state, so it always starts empty.
+        album_section: AlbumSection::empty(),
     }
 }
 
@@ -400,6 +557,11 @@ const COPY_ICON: &str = "\u{29C9}";
 const ALBUM_ID_PREFIX: &str = "album:";
 const ADDTO_ID_PREFIX: &str = "addto:";
 const COPY_ID_PREFIX: &str = "copy:";
+// ⚠ Must never start with `album` — `strip_album_id` uses `strip_prefix`, so
+// today's `album:` navigation prefix and this one are unambiguous, but a
+// careless future rename could collide.
+const RATING_ID_PREFIX: &str = "rating:";
+const FLAG_ID_PREFIX: &str = "flag:";
 
 fn album_jump_item_id(song_id: u64) -> String {
     format!("{ALBUM_ID_PREFIX}{song_id}")
@@ -415,6 +577,43 @@ fn addto_item_id(name: &str) -> String {
 /// to reach for `main.rs`'s remembered URL.
 fn copy_item_id(uri: &str) -> String {
     format!("{COPY_ID_PREFIX}{uri}")
+}
+
+fn rating_item_id(rating: u8) -> String {
+    format!("{RATING_ID_PREFIX}{rating}")
+}
+
+/// `flag`'s wire-format name (`relisten`/`classical`/`spoken`/`soundtrack`) —
+/// distinct from `AlbumFlag::column()`'s SQL column names, which are an
+/// internal `albumdb` detail this module has no reason to leak into the
+/// menu's ids. The inverse of `parse_flag_name`.
+fn flag_name(flag: AlbumFlag) -> &'static str {
+    match flag {
+        AlbumFlag::Relisten => "relisten",
+        AlbumFlag::Classical => "classical",
+        AlbumFlag::Spoken => "spoken",
+        AlbumFlag::Soundtrack => "soundtrack",
+    }
+}
+
+/// The inverse of `flag_name`, or `None` for anything else.
+fn parse_flag_name(name: &str) -> Option<AlbumFlag> {
+    match name {
+        "relisten" => Some(AlbumFlag::Relisten),
+        "classical" => Some(AlbumFlag::Classical),
+        "spoken" => Some(AlbumFlag::Spoken),
+        "soundtrack" => Some(AlbumFlag::Soundtrack),
+        _ => None,
+    }
+}
+
+/// `value` is the value a click on this item should *write* — the target
+/// state, not a toggle instruction. That matters if the row changed
+/// underneath between the menu being built and the item being clicked: you
+/// get the value you actually clicked for, not an inversion of some state
+/// you never saw.
+fn flag_item_id(flag: AlbumFlag, value: bool) -> String {
+    format!("{FLAG_ID_PREFIX}{}:{}", flag_name(flag), u8::from(value))
 }
 
 /// The song-id text of an album-nav menu id, or `None` if `id` isn't one.
@@ -434,6 +633,37 @@ pub fn strip_addto_id(id: &str) -> Option<&str> {
 /// The `mpdcontrol://` URI to copy, or `None` if `id` isn't a copy row's.
 pub fn strip_copy_id(id: &str) -> Option<&str> {
     id.strip_prefix(COPY_ID_PREFIX)
+}
+
+/// The rating text (`"0"`–`"5"`) of a `rating:` menu id, or `None` if `id`
+/// isn't one. Parsing to `u8` is left to the caller, so it can log a
+/// malformed id distinctly from an id belonging to some other item — same
+/// pattern as `strip_album_id`.
+pub fn strip_rating_id(id: &str) -> Option<&str> {
+    id.strip_prefix(RATING_ID_PREFIX)
+}
+
+/// The `"<name>:<0|1>"` remainder of a `flag:` menu id, or `None` if `id`
+/// isn't one. Splitting the flag name from the target value is left to the
+/// caller, same pattern as `strip_rating_id` above.
+pub fn strip_flag_id(id: &str) -> Option<&str> {
+    id.strip_prefix(FLAG_ID_PREFIX)
+}
+
+/// Parses `strip_flag_id`'s output the rest of the way: the flag it names and
+/// the value a click should write. `None` for anything malformed — an
+/// unknown name, a missing `:`, or a value that isn't exactly `0`/`1`. Kept
+/// here rather than in `main.rs` so the flag-name spelling has one home, not
+/// two: `main.rs` dispatches on the parsed `AlbumFlag`, never the wire string.
+pub fn parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)> {
+    let (name, value) = payload.split_once(':')?;
+    let flag = parse_flag_name(name)?;
+    let value = match value {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    Some((flag, value))
 }
 
 /// Turns an already-computed `MenuModel` into `muda` items. Every decision
@@ -463,7 +693,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
         None,
     ))?;
 
-    if model.show_album_section() {
+    if model.show_album_nav_section() {
         menu.append(&PredefinedMenuItem::separator())?;
         if let Some(jump) = &model.prev_album {
             menu.append(&MenuItem::with_id(
@@ -485,7 +715,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
 
     if model.show_track_section() {
         menu.append(&PredefinedMenuItem::separator())?;
-        for row in [model.track.as_ref(), model.album.as_ref()]
+        for row in [model.track.as_ref(), model.album_title.as_ref()]
             .into_iter()
             .flatten()
         {
@@ -495,6 +725,44 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
                 true,
                 None,
             ))?;
+        }
+        if let Some(summary) = &model.album_section.summary {
+            menu.append(&MenuItem::new(summary, false, None))?;
+        }
+        if let Some(notice) = &model.album_section.notice {
+            menu.append(&MenuItem::new(notice, false, None))?;
+        }
+        if let Some(controls) = &model.album_section.controls {
+            let album_submenu = Submenu::new("Album", true);
+
+            let rating_submenu = Submenu::new("Rating", true);
+            for rating in 0..=5u8 {
+                rating_submenu.append(&CheckMenuItem::with_id(
+                    rating_item_id(rating),
+                    format!("{} {rating}", stars(rating)),
+                    true,
+                    rating_checked(controls, rating),
+                    None,
+                ))?;
+            }
+            album_submenu.append(&rating_submenu)?;
+            album_submenu.append(&PredefinedMenuItem::separator())?;
+
+            for (flag, label, checked) in [
+                (AlbumFlag::Relisten, "Relisten", controls.relisten),
+                (AlbumFlag::Classical, "Classical", controls.classical),
+                (AlbumFlag::Spoken, "Spoken", controls.spoken),
+                (AlbumFlag::Soundtrack, "Soundtrack", controls.soundtrack),
+            ] {
+                album_submenu.append(&CheckMenuItem::with_id(
+                    flag_item_id(flag, !checked),
+                    label,
+                    true,
+                    checked,
+                    None,
+                ))?;
+            }
+            menu.append(&album_submenu)?;
         }
         if !model.in_playlists.is_empty() {
             let submenu = Submenu::new("In playlists", true);
@@ -514,6 +782,29 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
 
     // Block 1 (Play/Pause/Next/Clear) is always present, so this separator
     // and Quit are always appended — never leaving two separators adjacent.
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
+
+    Ok(menu)
+}
+
+/// The startup-error menu: just what broke and where to look, plus Quit.
+/// Used in place of `render` when `config::load` fails — nothing else in the
+/// app (MPD connection included) is even attempted in that case, so there is
+/// nothing else to show. The description rows are disabled `MenuItem`s
+/// (`false` for `enabled`), the same convention `render` uses for the
+/// informational "In playlists" rows.
+pub fn render_error(message: &str, log_path: Option<&Path>) -> Result<Menu> {
+    let menu = Menu::new();
+
+    menu.append(&MenuItem::new(message, false, None))?;
+    if let Some(log_path) = log_path {
+        menu.append(&MenuItem::new(
+            format!("Log: {}", log_path.display()),
+            false,
+            None,
+        ))?;
+    }
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
 
@@ -561,6 +852,22 @@ mod tests {
     }
 
     #[test]
+    fn year_of_prefers_original_date_and_rejects_unusable_values() {
+        // Every format the two columns are stored in.
+        assert_eq!(year_of(Some("1996"), None), Some("1996"));
+        assert_eq!(year_of(Some("1996-05"), None), Some("1996"));
+        assert_eq!(year_of(Some("1996-05-12"), None), Some("1996"));
+
+        assert_eq!(year_of(None, Some("2003-01-01")), Some("2003"));
+        assert_eq!(year_of(None, None), None);
+
+        // A non-numeric leading four characters falls through to `date`, and
+        // then to `None` — never into the menu.
+        assert_eq!(year_of(Some("abcd-05"), Some("2003")), Some("2003"));
+        assert_eq!(year_of(Some("abcd"), None), None);
+    }
+
+    #[test]
     fn truncate_is_unicode_safe() {
         // Multi-byte characters throughout; must not panic or split a char.
         let text = "🎵".repeat(30);
@@ -579,9 +886,9 @@ mod tests {
 
     #[test]
     fn track_title_paused_prefix_sits_outside_the_truncation_budget() {
-        // Spec §7.1: the glyph is prepended *after* truncation, so text is cut
-        // at exactly the same point whether paused or playing. Checked at the
-        // budget boundary and well past it.
+        // The glyph is prepended *after* truncation, so text is cut at exactly
+        // the same point whether paused or playing. Checked at the budget
+        // boundary and well past it.
         for title in [&"a".repeat(TITLE_MAX_CHARS), &"a".repeat(40)] {
             let playing = track_title(PlayState::Playing, Some(title), "foo.mp3", &[]);
             let paused = track_title(PlayState::Paused, Some(title), "foo.mp3", &[]);
@@ -874,7 +1181,7 @@ mod tests {
             track.uri,
             "mpdcontrol://add%20%22Beatles%2FAbbey%20Road%2F3.mp3%22"
         );
-        let album = model.album.unwrap();
+        let album = model.album_title.unwrap();
         assert_eq!(album.label, "Abbey Road");
         assert_eq!(album.uri, "mpdcontrol://add%20%22Beatles%2FAbbey%20Road%22");
         let prev = model.prev_album.unwrap();
@@ -898,11 +1205,12 @@ mod tests {
                 label: label.to_string(),
                 uri: add_uri("Al/1.mp3"),
             }),
-            album: None,
+            album_title: None,
             prev_album,
             next_album: None,
             in_playlists,
             add_to,
+            album_section: AlbumSection::empty(),
         }
     }
 
@@ -918,19 +1226,19 @@ mod tests {
         // Both false means `render` emits no separator for either section —
         // the "never two adjacent separators" rule.
         let model = model_with(None, None, vec![], vec![]);
-        assert!(!model.show_album_section());
+        assert!(!model.show_album_nav_section());
         assert!(!model.show_track_section());
     }
 
     #[test]
-    fn album_section_shows_when_either_jump_is_present() {
-        assert!(model_with(None, Some(a_jump()), vec![], vec![]).show_album_section());
+    fn album_nav_shows_when_either_jump_is_present() {
+        assert!(model_with(None, Some(a_jump()), vec![], vec![]).show_album_nav_section());
 
         let next_only = MenuModel {
             next_album: Some(a_jump()),
             ..model_with(None, None, vec![], vec![])
         };
-        assert!(next_only.show_album_section());
+        assert!(next_only.show_album_nav_section());
     }
 
     #[test]
@@ -944,7 +1252,7 @@ mod tests {
         );
 
         let album_only = MenuModel {
-            album: Some(CopyRow {
+            album_title: Some(CopyRow {
                 label: "Abbey Road".to_string(),
                 uri: add_uri("Beatles/Abbey Road"),
             }),
@@ -1008,7 +1316,7 @@ mod tests {
             &[],
             &[],
         );
-        assert!(model.album.is_none());
+        assert!(model.album_title.is_none());
         assert!(model.track.is_some());
     }
 
@@ -1054,6 +1362,30 @@ mod tests {
     }
 
     #[test]
+    fn flag_payload_round_trips_every_flag_and_value() {
+        for flag in [
+            AlbumFlag::Relisten,
+            AlbumFlag::Classical,
+            AlbumFlag::Spoken,
+            AlbumFlag::Soundtrack,
+        ] {
+            for value in [false, true] {
+                let id = flag_item_id(flag, value);
+                let payload = strip_flag_id(&id).unwrap();
+                assert_eq!(parse_flag_payload(payload), Some((flag, value)));
+            }
+        }
+    }
+
+    #[test]
+    fn parse_flag_payload_rejects_malformed_input() {
+        assert_eq!(parse_flag_payload("classical"), None); // no ':'
+        assert_eq!(parse_flag_payload("unknown:1"), None); // bad name
+        assert_eq!(parse_flag_payload("classical:2"), None); // bad value
+        assert_eq!(parse_flag_payload("classical:"), None);
+    }
+
+    #[test]
     fn id_parsers_reject_the_other_family_and_static_ids() {
         // What stops dispatch firing the wrong branch: each parser must not
         // claim ids belonging to the other family or to a static item.
@@ -1068,5 +1400,176 @@ mod tests {
         assert_eq!(strip_copy_id(&addto_item_id("Five stars")), None);
         assert_eq!(strip_copy_id(&album_jump_item_id(42)), None);
         assert_eq!(strip_copy_id(QUIT_ID), None);
+
+        let rating_id = rating_item_id(4);
+        let flag_id = flag_item_id(AlbumFlag::Classical, true);
+        assert_eq!(strip_album_id(&rating_id), None);
+        assert_eq!(strip_addto_id(&rating_id), None);
+        assert_eq!(strip_copy_id(&rating_id), None);
+        assert_eq!(strip_flag_id(&rating_id), None);
+        assert_eq!(strip_album_id(&flag_id), None);
+        assert_eq!(strip_addto_id(&flag_id), None);
+        assert_eq!(strip_copy_id(&flag_id), None);
+        assert_eq!(strip_rating_id(&flag_id), None);
+        assert_eq!(strip_rating_id(QUIT_ID), None);
+        assert_eq!(strip_flag_id(QUIT_ID), None);
+    }
+
+    #[test]
+    fn stars_renders_filled_then_empty() {
+        assert_eq!(stars(0), "☆☆☆☆☆");
+        assert_eq!(stars(1), "★☆☆☆☆");
+        assert_eq!(stars(2), "★★☆☆☆");
+        assert_eq!(stars(3), "★★★☆☆");
+        assert_eq!(stars(4), "★★★★☆");
+        assert_eq!(stars(5), "★★★★★");
+    }
+
+    fn info(
+        year: Option<&str>,
+        rating: Option<u8>,
+        relisten: bool,
+        classical: bool,
+        spoken: bool,
+        soundtrack: bool,
+    ) -> AlbumInfo {
+        AlbumInfo {
+            year: year.map(str::to_string),
+            rating,
+            relisten,
+            classical,
+            spoken,
+            soundtrack,
+        }
+    }
+
+    #[test]
+    fn album_summary_worked_examples() {
+        // Matches the rendered examples in docs/usage.md, in order.
+        assert_eq!(
+            album_summary(&info(Some("1996"), Some(4), true, false, false, true)),
+            Some("1996 · ★★★★☆ · ↻ · Soundtrack".to_string())
+        );
+        assert_eq!(
+            album_summary(&info(Some("1996"), Some(3), false, false, false, false)),
+            Some("1996 · ★★★☆☆".to_string())
+        );
+        assert_eq!(
+            album_summary(&info(Some("2003"), Some(2), false, true, true, false)),
+            Some("2003 · ★★☆☆☆ · Classical · Spoken".to_string())
+        );
+        assert_eq!(
+            album_summary(&info(None, None, true, true, false, false)),
+            Some("↻ · Classical".to_string())
+        );
+        // Unrated, no year, no flags: the whole row is omitted, not emitted empty.
+        assert_eq!(
+            album_summary(&info(None, None, false, false, false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn album_summary_rating_zero_is_distinct_from_no_rating() {
+        // `rating = 0` renders as all-empty stars — visually distinct from
+        // the rating part being absent entirely.
+        assert_eq!(
+            album_summary(&info(None, Some(0), false, false, false, false)),
+            Some("☆☆☆☆☆".to_string())
+        );
+    }
+
+    #[test]
+    fn album_section_no_album_hides_everything() {
+        let section = album_section(&AlbumState::NoAlbum, None);
+        assert_eq!(section.summary, None);
+        assert_eq!(section.notice, None);
+        assert_eq!(section.controls, None);
+    }
+
+    #[test]
+    fn album_section_unavailable_shows_notice_only() {
+        let section = album_section(&AlbumState::Unavailable, None);
+        assert_eq!(section.summary, None);
+        assert_eq!(section.notice, Some(UNAVAILABLE_NOTICE.to_string()));
+        assert_eq!(section.controls, None);
+    }
+
+    #[test]
+    fn album_section_not_found_shows_summary_only() {
+        let section = album_section(&AlbumState::NotFound, None);
+        assert_eq!(section.summary, Some(NOT_FOUND_SUMMARY.to_string()));
+        assert_eq!(section.notice, None);
+        assert_eq!(section.controls, None);
+    }
+
+    #[test]
+    fn album_section_found_yields_summary_and_controls() {
+        let album_info = info(Some("1996"), Some(4), false, false, false, false);
+        let section = album_section(&AlbumState::Found(album_info), None);
+        assert_eq!(section.summary, Some("1996 · ★★★★☆".to_string()));
+        assert_eq!(section.notice, None);
+        assert_eq!(
+            section.controls,
+            Some(info(Some("1996"), Some(4), false, false, false, false))
+        );
+    }
+
+    #[test]
+    fn album_section_write_error_overrides_the_notice_but_not_summary_or_controls() {
+        // A failed write on an otherwise `Found` row still shows the row's
+        // real (unchanged) summary and controls — the notice is additional,
+        // so a failed write is self-evident as "the tick I clicked isn't
+        // there" rather than a misleading optimistic checkmark.
+        let album_info = info(Some("1996"), Some(4), false, false, false, false);
+        let section = album_section(&AlbumState::Found(album_info), Some("disk full"));
+        assert_eq!(section.notice, Some(WRITE_FAILED_NOTICE.to_string()));
+        assert!(section.summary.is_some());
+        assert!(section.controls.is_some());
+
+        // It also takes priority over the plain "unavailable" notice.
+        let unavailable = album_section(&AlbumState::Unavailable, Some("disk full"));
+        assert_eq!(unavailable.notice, Some(WRITE_FAILED_NOTICE.to_string()));
+    }
+
+    #[test]
+    fn rating_checked_matches_only_the_stored_rating() {
+        let unrated = info(None, None, false, false, false, false);
+        for r in 0..=5 {
+            assert!(!rating_checked(&unrated, r));
+        }
+
+        let rated = AlbumInfo {
+            rating: Some(3),
+            ..unrated
+        };
+        for r in 0..=5 {
+            assert_eq!(rating_checked(&rated, r), r == 3);
+        }
+    }
+
+    #[test]
+    fn show_track_section_true_with_only_album_data() {
+        let mut model = model_with(None, None, vec![], vec![]);
+        model.album_section = AlbumSection {
+            summary: Some("1996 · ★★★★☆".to_string()),
+            notice: None,
+            controls: None,
+        };
+        assert!(model.show_track_section());
+    }
+
+    #[test]
+    fn show_track_section_true_with_notice_only() {
+        // A notice-only section (e.g. "album database unavailable") must
+        // still surface the track section — it's the only thing telling the
+        // user the feature is broken.
+        let mut model = model_with(None, None, vec![], vec![]);
+        model.album_section = AlbumSection {
+            summary: None,
+            notice: Some(UNAVAILABLE_NOTICE.to_string()),
+            controls: None,
+        };
+        assert!(model.show_track_section());
     }
 }

@@ -1,0 +1,533 @@
+# Synthetic fixture library for album-tool tests.
+#
+# Every album name, artist name and MBID here is invented — the real
+# library lives under the gitignored album-data/ and is never committed.
+# Shape mirrors MPD's own `key: value` response lines, one block per song,
+# a `file:` line always starting a new record. Read by
+# `library::FixtureLibrarySource`, which shares the same parser
+# (`mpd_wire::parse_directory_listing`) as the real MPD implementation.
+#
+# Deliberately covers:
+#   - all six tag_state values (see per-album comments below)
+#   - a Date of '0000' (Quiet Static, Becky's Wedding Edits)
+#   - a multi-disc album with continuous track numbering (Driftwood Choir)
+#   - a missing AlbumArtist (Vega Transmission, Rowan Ashworth)
+#   - a path containing an apostrophe (A Midnight Call for the '90s Kids)
+#   - all four path patterns from albumdb::parse_album_path
+
+# --- Albums/A/Aurora Fields/Glass Horizon -- clean ---
+file: Albums/A/Aurora Fields/Glass Horizon/01 - Waking Light.mp3
+Album: Glass Horizon
+AlbumArtist: Aurora Fields
+Artist: Aurora Fields
+Title: Waking Light
+Track: 1
+Date: 2016-03-04
+OriginalDate: 2016-03-04
+Genre: Dream Pop
+Label: Salt Flat Records
+Disc: 1
+MUSICBRAINZ_ALBUMID: rg-aurora-glass-horizon
+MUSICBRAINZ_RELEASEGROUPID: rg-aurora-glass-horizon-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-aurora-fields
+
+file: Albums/A/Aurora Fields/Glass Horizon/02 - Coastal Drift.mp3
+Album: Glass Horizon
+AlbumArtist: Aurora Fields
+Artist: Aurora Fields
+Title: Coastal Drift
+Track: 2
+Date: 2016-03-04
+OriginalDate: 2016-03-04
+Genre: Dream Pop
+Label: Salt Flat Records
+Disc: 1
+MUSICBRAINZ_ALBUMID: rg-aurora-glass-horizon
+MUSICBRAINZ_RELEASEGROUPID: rg-aurora-glass-horizon-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-aurora-fields
+
+# --- Albums/B/Broken Compass/Tidal Static -- clean ---
+file: Albums/B/Broken Compass/Tidal Static/01 - Static Line.mp3
+Album: Tidal Static
+AlbumArtist: Broken Compass
+Artist: Broken Compass
+Title: Static Line
+Track: 1
+Date: 2011
+OriginalDate: 2011
+Genre: Post-Punk
+MUSICBRAINZ_ALBUMID: rg-broken-tidal-static
+MUSICBRAINZ_RELEASEGROUPID: rg-broken-tidal-static-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-broken-compass
+
+file: Albums/B/Broken Compass/Tidal Static/02 - Low Frequency.mp3
+Album: Tidal Static
+AlbumArtist: Broken Compass
+Artist: Broken Compass
+Title: Low Frequency
+Track: 2
+Date: 2011
+OriginalDate: 2011
+Genre: Post-Punk
+MUSICBRAINZ_ALBUMID: rg-broken-tidal-static
+MUSICBRAINZ_RELEASEGROUPID: rg-broken-tidal-static-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-broken-compass
+
+# --- Albums/C/Cold Static Ensemble/Marble Skyline -- clean ---
+file: Albums/C/Cold Static Ensemble/Marble Skyline/01 - Overture.mp3
+Album: Marble Skyline
+AlbumArtist: Cold Static Ensemble
+Artist: Cold Static Ensemble
+Title: Overture
+Track: 1
+Date: 1998
+OriginalDate: 1998
+Genre: Chamber Pop
+MUSICBRAINZ_ALBUMID: rg-cold-marble-skyline
+MUSICBRAINZ_RELEASEGROUPID: rg-cold-marble-skyline-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-cold-static-ensemble
+
+file: Albums/C/Cold Static Ensemble/Marble Skyline/02 - Glass Room.mp3
+Album: Marble Skyline
+AlbumArtist: Cold Static Ensemble
+Artist: Cold Static Ensemble
+Title: Glass Room
+Track: 2
+Date: 1998
+OriginalDate: 1998
+Genre: Chamber Pop
+MUSICBRAINZ_ALBUMID: rg-cold-marble-skyline
+MUSICBRAINZ_RELEASEGROUPID: rg-cold-marble-skyline-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-cold-static-ensemble
+
+file: Albums/C/Cold Static Ensemble/Marble Skyline/03 - Marble Skyline.mp3
+Album: Marble Skyline
+AlbumArtist: Cold Static Ensemble
+Artist: Cold Static Ensemble
+Title: Marble Skyline
+Track: 3
+Date: 1998
+OriginalDate: 1998
+Genre: Chamber Pop
+MUSICBRAINZ_ALBUMID: rg-cold-marble-skyline
+MUSICBRAINZ_RELEASEGROUPID: rg-cold-marble-skyline-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-cold-static-ensemble
+
+# --- Albums/D/Driftwood Choir/Amber Season -- clean, multi-disc ---
+# Continuous track numbering across two discs in one directory — the real
+# library has no CD1/CD2/ subdirectories, so disc_count comes from the Disc
+# tag, not the path.
+file: Albums/D/Driftwood Choir/Amber Season/01 - First Light.mp3
+Album: Amber Season
+AlbumArtist: Driftwood Choir
+Artist: Driftwood Choir
+Title: First Light
+Track: 1
+Disc: 1
+Date: 2004
+OriginalDate: 2004
+Genre: Folk
+MUSICBRAINZ_ALBUMID: rg-driftwood-amber-season
+MUSICBRAINZ_RELEASEGROUPID: rg-driftwood-amber-season-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-driftwood-choir
+
+file: Albums/D/Driftwood Choir/Amber Season/02 - Slow Harvest.mp3
+Album: Amber Season
+AlbumArtist: Driftwood Choir
+Artist: Driftwood Choir
+Title: Slow Harvest
+Track: 2
+Disc: 1
+Date: 2004
+OriginalDate: 2004
+Genre: Folk
+MUSICBRAINZ_ALBUMID: rg-driftwood-amber-season
+MUSICBRAINZ_RELEASEGROUPID: rg-driftwood-amber-season-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-driftwood-choir
+
+file: Albums/D/Driftwood Choir/Amber Season/03 - Late Frost.mp3
+Album: Amber Season
+AlbumArtist: Driftwood Choir
+Artist: Driftwood Choir
+Title: Late Frost
+Track: 3
+Disc: 2
+Date: 2004
+OriginalDate: 2004
+Genre: Folk
+MUSICBRAINZ_ALBUMID: rg-driftwood-amber-season
+MUSICBRAINZ_RELEASEGROUPID: rg-driftwood-amber-season-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-driftwood-choir
+
+file: Albums/D/Driftwood Choir/Amber Season/04 - Amber Season.mp3
+Album: Amber Season
+AlbumArtist: Driftwood Choir
+Artist: Driftwood Choir
+Title: Amber Season
+Track: 4
+Disc: 2
+Date: 2004
+OriginalDate: 2004
+Genre: Folk
+MUSICBRAINZ_ALBUMID: rg-driftwood-amber-season
+MUSICBRAINZ_RELEASEGROUPID: rg-driftwood-amber-season-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-driftwood-choir
+
+# --- Albums/E/Echo Valley/Nightshade Radio -- clean ---
+file: Albums/E/Echo Valley/Nightshade Radio/01 - Transmission.mp3
+Album: Nightshade Radio
+AlbumArtist: Echo Valley
+Artist: Echo Valley
+Title: Transmission
+Track: 1
+Date: 2019
+OriginalDate: 2019
+Genre: Synthpop
+MUSICBRAINZ_ALBUMID: rg-echo-nightshade-radio
+MUSICBRAINZ_RELEASEGROUPID: rg-echo-nightshade-radio-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-echo-valley
+
+file: Albums/E/Echo Valley/Nightshade Radio/02 - Afterglow.mp3
+Album: Nightshade Radio
+AlbumArtist: Echo Valley
+Artist: Echo Valley
+Title: Afterglow
+Track: 2
+Date: 2019
+OriginalDate: 2019
+Genre: Synthpop
+MUSICBRAINZ_ALBUMID: rg-echo-nightshade-radio
+MUSICBRAINZ_RELEASEGROUPID: rg-echo-nightshade-radio-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-echo-valley
+
+# --- Albums/F/Faded Static/Low Tide Recordings -- clean ---
+file: Albums/F/Faded Static/Low Tide Recordings/01 - Undertow.mp3
+Album: Low Tide Recordings
+AlbumArtist: Faded Static
+Artist: Faded Static
+Title: Undertow
+Track: 1
+Date: 2007
+OriginalDate: 2007
+Genre: Shoegaze
+MUSICBRAINZ_ALBUMID: rg-faded-low-tide
+MUSICBRAINZ_RELEASEGROUPID: rg-faded-low-tide-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-faded-static
+
+file: Albums/F/Faded Static/Low Tide Recordings/02 - Salt Air.mp3
+Album: Low Tide Recordings
+AlbumArtist: Faded Static
+Artist: Faded Static
+Title: Salt Air
+Track: 2
+Date: 2007
+OriginalDate: 2007
+Genre: Shoegaze
+MUSICBRAINZ_ALBUMID: rg-faded-low-tide
+MUSICBRAINZ_RELEASEGROUPID: rg-faded-low-tide-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-faded-static
+
+# --- Albums/M/Mixed Signals Duo/Paper Tigers -- mixed_mbid ---
+# Every track has an MBID, but they disagree -> mixed_mbid.
+file: Albums/M/Mixed Signals Duo/Paper Tigers/01 - Paper Tigers.mp3
+Album: Paper Tigers
+AlbumArtist: Mixed Signals Duo
+Artist: Mixed Signals Duo
+Title: Paper Tigers
+Track: 1
+Date: 2013
+Genre: Indie Rock
+MUSICBRAINZ_ALBUMID: rg-mixed-paper-tigers-a
+MUSICBRAINZ_RELEASEGROUPID: rg-mixed-paper-tigers-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-mixed-signals-duo
+
+file: Albums/M/Mixed Signals Duo/Paper Tigers/02 - Ash and Static.mp3
+Album: Paper Tigers
+AlbumArtist: Mixed Signals Duo
+Artist: Mixed Signals Duo
+Title: Ash and Static
+Track: 2
+Date: 2013
+Genre: Indie Rock
+MUSICBRAINZ_ALBUMID: rg-mixed-paper-tigers-b
+MUSICBRAINZ_RELEASEGROUPID: rg-mixed-paper-tigers-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-mixed-signals-duo
+
+# --- Albums/P/Pale Harbor/Winter Static -- partial_mbid ---
+# Some tracks have an MBID, some don't -> partial_mbid.
+file: Albums/P/Pale Harbor/Winter Static/01 - Frostline.mp3
+Album: Winter Static
+AlbumArtist: Pale Harbor
+Artist: Pale Harbor
+Title: Frostline
+Track: 1
+Date: 2009
+Genre: Ambient
+MUSICBRAINZ_ALBUMID: rg-pale-winter-static
+MUSICBRAINZ_RELEASEGROUPID: rg-pale-winter-static-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-pale-harbor
+
+file: Albums/P/Pale Harbor/Winter Static/02 - Thaw.mp3
+Album: Winter Static
+AlbumArtist: Pale Harbor
+Artist: Pale Harbor
+Title: Thaw
+Track: 2
+Date: 2009
+Genre: Ambient
+
+# --- Albums/Q/Quiet Static/Salt & Cedar -- no_mbid_consistent ---
+# No MBIDs; one Album/AlbumArtist/year. Date '0000' on one track must
+# normalise away rather than counting as a second distinct year.
+file: Albums/Q/Quiet Static/Salt & Cedar/01 - Cedar Smoke.mp3
+Album: Salt & Cedar
+AlbumArtist: Quiet Static
+Artist: Quiet Static
+Title: Cedar Smoke
+Track: 1
+Date: 0000
+Genre: Folk
+
+file: Albums/Q/Quiet Static/Salt & Cedar/02 - Low Salt.mp3
+Album: Salt & Cedar
+AlbumArtist: Quiet Static
+Artist: Quiet Static
+Title: Low Salt
+Track: 2
+Date: 1998
+Genre: Folk
+
+# --- Albums/R/Rusted Chorus/Harbor Lights -- no_mbid_varied (title) ---
+file: Albums/R/Rusted Chorus/Harbor Lights/01 - Harbor Lights.mp3
+Album: Harbor Lights
+AlbumArtist: Rusted Chorus
+Artist: Rusted Chorus
+Title: Harbor Lights
+Track: 1
+Date: 2001
+Genre: Rock
+
+file: Albums/R/Rusted Chorus/Harbor Lights/02 - Dockside Bonus.mp3
+Album: Harbor Lights (Reissue)
+AlbumArtist: Rusted Chorus
+Artist: Rusted Chorus
+Title: Dockside Bonus
+Track: 2
+Date: 2001
+Genre: Rock
+
+# --- Albums/S/Slow Static Radio/Amber Waves -- no_mbid_varied (year) ---
+file: Albums/S/Slow Static Radio/Amber Waves/01 - Amber Waves.mp3
+Album: Amber Waves
+AlbumArtist: Slow Static Radio
+Artist: Slow Static Radio
+Title: Amber Waves
+Track: 1
+Date: 1991
+Genre: Rock
+
+file: Albums/S/Slow Static Radio/Amber Waves/02 - Amber Waves (Live).mp3
+Album: Amber Waves
+AlbumArtist: Slow Static Radio
+Artist: Slow Static Radio
+Title: Amber Waves (Live)
+Track: 2
+Date: 2004
+Genre: Rock
+
+# --- Albums/T/Tidewater Static/Untitled Sessions -- no_mbid_incomplete (Album missing) ---
+file: Albums/T/Tidewater Static/Untitled Sessions/01 - Session One.mp3
+AlbumArtist: Tidewater Static
+Artist: Tidewater Static
+Title: Session One
+Track: 1
+Date: 2015
+
+file: Albums/T/Tidewater Static/Untitled Sessions/02 - Session Two.mp3
+Album: Untitled Sessions
+AlbumArtist: Tidewater Static
+Artist: Tidewater Static
+Title: Session Two
+Track: 2
+Date: 2015
+
+# --- Albums/V/Vega Transmission/Static Bloom -- no_mbid_incomplete (AlbumArtist missing) ---
+file: Albums/V/Vega Transmission/Static Bloom/01 - Static Bloom.mp3
+Album: Static Bloom
+Artist: Vega Transmission
+Title: Static Bloom
+Track: 1
+Date: 2018
+
+file: Albums/V/Vega Transmission/Static Bloom/02 - Bloom Reprise.mp3
+Album: Static Bloom
+AlbumArtist: Vega Transmission
+Artist: Vega Transmission
+Title: Bloom Reprise
+Track: 2
+Date: 2018
+
+# --- Compilations/Faded Neon Nights -- no_mbid_consistent ---
+# Many distinct track Artist values under one AlbumArtist and one year: a
+# normal compilation -> no_mbid_consistent, not "varied". Artist variation is
+# deliberately not a signal.
+file: Compilations/Faded Neon Nights/01 - Skyline Runner.mp3
+Album: Faded Neon Nights
+AlbumArtist: Various Artists
+Artist: Skyline Runner
+Title: Neon Static
+Track: 1
+Date: 1999
+Genre: Synthwave
+
+file: Compilations/Faded Neon Nights/02 - Glass Horizon.mp3
+Album: Faded Neon Nights
+AlbumArtist: Various Artists
+Artist: Glass Horizon
+Title: Midnight Freeway
+Track: 2
+Date: 1999
+Genre: Synthwave
+
+file: Compilations/Faded Neon Nights/03 - Static Bloom.mp3
+Album: Faded Neon Nights
+AlbumArtist: Various Artists
+Artist: Static Bloom
+Title: Chrome Static
+Track: 3
+Date: 1999
+Genre: Synthwave
+
+# --- Compilations/A Midnight Call for the '90s Kids -- clean, apostrophe path ---
+# Real path shape that broke the first quoting attempt (an apostrophe needs
+# escaping at both the filter and protocol levels), with invented content.
+file: Compilations/A Midnight Call for the '90s Kids/01 - Broadcast.mp3
+Album: A Midnight Call for the '90s Kids
+AlbumArtist: Various Artists
+Artist: Rusted Chorus
+Title: Broadcast
+Track: 1
+Date: 1994
+Genre: Alternative Rock
+MUSICBRAINZ_ALBUMID: rg-midnight-call-90s
+MUSICBRAINZ_RELEASEGROUPID: rg-midnight-call-90s-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-various-artists
+
+file: Compilations/A Midnight Call for the '90s Kids/02 - Static Signal.mp3
+Album: A Midnight Call for the '90s Kids
+AlbumArtist: Various Artists
+Artist: Echo Valley
+Title: Static Signal
+Track: 2
+Date: 1994
+Genre: Alternative Rock
+MUSICBRAINZ_ALBUMID: rg-midnight-call-90s
+MUSICBRAINZ_RELEASEGROUPID: rg-midnight-call-90s-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-various-artists
+
+# --- Compilations/Holiday Static Collection -- no_mbid_varied (title) ---
+file: Compilations/Holiday Static Collection/01 - Winter Signal.mp3
+Album: Holiday Static Collection
+AlbumArtist: Various Artists
+Artist: Pale Harbor
+Title: Winter Signal
+Track: 1
+Date: 1988
+Genre: Holiday
+
+file: Compilations/Holiday Static Collection/02 - Frost Fair.mp3
+Album: Holiday Static Collection Vol. 2
+AlbumArtist: Various Artists
+Artist: Cold Static Ensemble
+Title: Frost Fair
+Track: 2
+Date: 1992
+Genre: Holiday
+
+# --- Unnmatched/Rowan Ashworth/Songs for a Quiet House -- no_mbid_incomplete ---
+# Unnmatched/<artist>/<album> pattern, AlbumArtist missing on one track.
+file: Unnmatched/Rowan Ashworth/Songs for a Quiet House/01 - Kitchen Light.mp3
+Album: Songs for a Quiet House
+AlbumArtist: Rowan Ashworth
+Artist: Rowan Ashworth
+Title: Kitchen Light
+Track: 1
+Date: 2006
+
+file: Unnmatched/Rowan Ashworth/Songs for a Quiet House/02 - Hallway Static.mp3
+Album: Songs for a Quiet House
+Artist: Rowan Ashworth
+Title: Hallway Static
+Track: 2
+Date: 2006
+
+# --- Unnmatched/Becky's Wedding Edits -- no_mbid_consistent ---
+# Unnmatched/<album> pattern (no artist folder). Both tracks Date '0000':
+# normalises to no distinct years at all, not a variation.
+file: Unnmatched/Becky's Wedding Edits/01 - Processional.mp3
+Album: Becky's Wedding Edits
+AlbumArtist: Family & Friends
+Artist: Family & Friends
+Title: Processional
+Track: 1
+Date: 0000
+
+file: Unnmatched/Becky's Wedding Edits/02 - Recessional.mp3
+Album: Becky's Wedding Edits
+AlbumArtist: Family & Friends
+Artist: Family & Friends
+Title: Recessional
+Track: 2
+Date: 0000
+
+# --- Unnmatched/Static Interference Radio Hour -- clean ---
+# Unnmatched/<album> pattern, but tagged: tag_state is clean regardless of
+# the loose top-level path — the path only matters once tags are untrusted.
+file: Unnmatched/Static Interference Radio Hour/01 - Opening Static.mp3
+Album: Static Interference Radio Hour
+AlbumArtist: Various Artists
+Artist: Various Artists
+Title: Opening Static
+Track: 1
+Date: 2000
+MUSICBRAINZ_ALBUMID: rg-static-interference-radio-hour
+MUSICBRAINZ_RELEASEGROUPID: rg-static-interference-radio-hour-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-various-artists
+
+file: Unnmatched/Static Interference Radio Hour/02 - Closing Static.mp3
+Album: Static Interference Radio Hour
+AlbumArtist: Various Artists
+Artist: Various Artists
+Title: Closing Static
+Track: 2
+Date: 2000
+MUSICBRAINZ_ALBUMID: rg-static-interference-radio-hour
+MUSICBRAINZ_RELEASEGROUPID: rg-static-interference-radio-hour-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-various-artists
+
+# --- Albums/Z/Zephyr Static/Coastal Drift -- clean ---
+file: Albums/Z/Zephyr Static/Coastal Drift/01 - Coastal Drift.mp3
+Album: Coastal Drift
+AlbumArtist: Zephyr Static
+Artist: Zephyr Static
+Title: Coastal Drift
+Track: 1
+Date: 2021
+OriginalDate: 2021
+Genre: Indie Folk
+MUSICBRAINZ_ALBUMID: rg-zephyr-coastal-drift
+MUSICBRAINZ_RELEASEGROUPID: rg-zephyr-coastal-drift-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-zephyr-static
+
+file: Albums/Z/Zephyr Static/Coastal Drift/02 - Harbor Fade.mp3
+Album: Coastal Drift
+AlbumArtist: Zephyr Static
+Artist: Zephyr Static
+Title: Harbor Fade
+Track: 2
+Date: 2021
+OriginalDate: 2021
+Genre: Indie Folk
+MUSICBRAINZ_ALBUMID: rg-zephyr-coastal-drift
+MUSICBRAINZ_RELEASEGROUPID: rg-zephyr-coastal-drift-grp
+MUSICBRAINZ_ALBUMARTISTID: artist-zephyr-static

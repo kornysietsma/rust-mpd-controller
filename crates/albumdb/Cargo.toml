@@ -1,0 +1,14 @@
+[package]
+name = "albumdb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+time = { workspace = true, features = ["formatting", "macros", "parsing"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true

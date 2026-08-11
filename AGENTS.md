@@ -1,16 +1,57 @@
 # Agent notes
 
-A macOS menu-bar MPD controller plus an `mpdcontrol://` URL scheme. Complete
-and in daily use: playback controls, album traversal, playlist membership and
-"Add to", copy-URI rows for the current track and album, plus the URL scheme. See `README.md` for architecture and usage, and
-`docs/implementation-details.md` for the non-obvious details behind it —
-including the measured evidence behind the album-grouping and run-length
-rules, which should not be re-derived or "tuned" without re-measuring.
+A Cargo workspace with four crates:
+
+- `crates/controller` — a macOS menu-bar MPD controller plus an `mpdcontrol://`
+  URL scheme. Complete and in daily use: playback controls, album traversal,
+  playlist membership and "Add to", copy-URI rows for the current track and
+  album, the current album's rating/category flags read and written straight
+  from the menu, plus the URL scheme.
+- `crates/albumdb` — the SQLite album database: schema, domain types, and all
+  the pure derivation logic. `controller` depends on it for exactly one thing,
+  `src/album.rs`'s worker thread; everything else about the album side is
+  independent of the menu-bar app.
+- `crates/album-tool` — the `scan`/`sync`/`status` CLI that maintains it.
+- `crates/mpd-conf` — parses MPD's own `mpd.conf`. Both binaries infer the MPD
+  port, and the album database's location, from it rather than being told
+  twice. Returns `music_directory` as an `Option`: `album-tool` requires it,
+  the menu-bar app doesn't.
+
+`README.md` is the front door. Beyond it: `docs/architecture.md` for module
+and threading layout, `docs/usage.md` for the menu and URL scheme as a user
+meets them, `docs/implementation-details.md` for the non-obvious details
+behind the controller, and `docs/album-database.md` for the same on the album
+database. The last two hold the measured evidence behind the album-grouping,
+run-length, and change-detection rules — **don't re-derive or "tune" any of
+those without re-measuring.**
 
 Scope is deliberately personal-tool-sized: prefer simple working code over
 exhaustive coverage, and don't design in speculative complexity. Ideas that
 were explicitly deferred are in `docs/future_expansions.md` — check there
 before proposing "obvious" additions.
+
+## Don't cite `spec.md` / `plan.md` from code
+
+Those are **working documents, deleted when an epic completes.** It has
+happened twice already, and `controller/src/menu.rs` and `mpd.rs` carried
+dangling "spec §7.1" / "spec §3" references to long-dead specs for months
+because of it.
+
+A comment must stand on its own. Either state the fact inline, or cite a file
+under `docs/` — never a section number in a document that won't outlive the
+branch.
+
+## Quality gates
+
+No CI in this repo — run all three by hand before calling any work done:
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Default rustfmt/clippy settings; no config file for either, deliberately.
 
 ## Verifying GUI/tray state
 
@@ -73,6 +114,77 @@ Known gotchas already found this way, so you don't have to re-derive them:
   toggling `random` mid-album-run had no effect on the menu until `Options`
   was handled identically to `Player` (both just refetch `Status` +
   `CurrentSong` and reuse the cached queue).
+- `mpd_client` 1.4.1's `Tag` enum has a typed `OriginalDate` variant but **no**
+  variant for `MUSICBRAINZ_RELEASEGROUPID` (or any other unrecognized tag) —
+  those fall into the catch-all `Tag::Other(Box<str>)`, and `SongBuilder`
+  applies this to every field key, so nothing sent by MPD is ever dropped.
+  Confirmed live via `CurrentSong`: `OriginalDate` and
+  `Other("MUSICBRAINZ_RELEASEGROUPID")` both came through correctly on the
+  same song. No need to special-case tags the enum doesn't know about.
+- **`PRAGMA data_version` is a per-*connection* sequence** — values from two
+  different connections are unrelated and must never be compared, which is
+  why dropping the connection has to forget the remembered value too. Why it
+  was chosen over `stat()` at all, with the measurements, is in
+  `docs/album-database.md`.
+- `rusqlite`'s `bundled` feature compiles `libsqlite3-sys` 0.38.1,
+  whose build script uses `cfg_select!` — stable only on Rust ~1.97+. On an
+  older stable toolchain (seen: 1.92.0) the build fails with "use of unstable
+  library feature `cfg_select`". Fix: `rustup update`. Not a code issue.
+- `musicbrainz_rs` 0.13.0 needs the `async` feature enabled (off by default)
+  for `execute_async`/`execute_with_client_async` to exist at all. There's no
+  free `set_user_agent()` function — construct
+  `MusicBrainzClient::new(user_agent)` and pass it explicitly to
+  `execute_with_client_async`. `ReleaseGroup::fetch().with_genres()` populates
+  `genres: Option<Vec<Genre>>` with vote counts on `Genre.count`, and
+  `.with_releases()` populates `releases: Option<Vec<Release>>` — both
+  confirmed live, matching the genre counts in `docs/album-database.md`
+  exactly.
+- **`musicbrainz_rs` 0.13.0's built-in rate limiter is unreachable from the
+  outside — don't rely on it.** Its `rate_limit` feature enables `dep:governor`
+  but never actually uses it (confirmed: no `governor` reference anywhere in
+  the crate's source), and never forwards to `api_bindium`'s own `rate_limit`
+  feature — the thing that actually gates `client.await_rate_limit()` inside
+  `try_send_request_async`. So there is no way, through any combination of
+  public feature flags, to turn on real MusicBrainz-side rate limiting.
+  `album-tool/src/musicbrainz.rs`'s `RateLimiter` (own `Mutex<Option<Instant>>`
+  + `min_interval`) replaces it — resolves the "still to be decided" note this
+  entry used to carry. Separately, the crate *does* auto-retry a bare `503`
+  internally (unconditionally, not behind a feature — default `max_retries =
+  10`, using the response's `Retry-After` header if present else its own
+  backoff formula), but **not** other `5xx` statuses — those return a single
+  `Err` on first failure, which is why `RealMusicBrainzClient` wraps its own
+  outer retry/backoff loop (`backoff_duration`) around the whole call. `404`
+  is detectable cleanly via
+  `err.as_musicbrainz_error().is_some_and(|e| e.is_not_found())`, without
+  needing the raw HTTP status at all.
+- `mpd_client` 1.4.1's `filter::Filter` type only supports tag comparisons
+  (`Filter::tag`, `Filter::new(tag, operator, value)`) — there is no `base`
+  variant, so it can't express `(base '<path>')`. There's also no typed
+  command for `find`/`lsinfo`/`listfiles`. `album-tool/src/library.rs` hand-
+  rolls all three as `Command` impls (same pattern as `controller`'s
+  `AddRecursive`/`ListPlaylist`), and `album-tool/src/mpd_wire.rs` builds the
+  `base` filter clause by hand. Its inner escaping (backslash then
+  apostrophe) only needs to handle `\`/`'` — the *outer*
+  protocol-level escaping (backslash-escaping `'`/`"`/`\`, wrapping in double
+  quotes because paths contain spaces) is applied automatically by
+  `mpd_protocol::command::escape_argument` once the clause is passed through
+  `RawCommand::argument`, so there's nothing to duplicate there.
+- `Song::from_frame_multi`/`SongInQueue::from_frame_multi` (the response
+  parsers `Find`/`Queue`/etc. use internally) are `pub(crate)` inside
+  `mpd_client` — not reachable from outside the crate. Any hand-rolled
+  `Command` (see above) has to parse `Frame`'s `(key, value)` pairs itself;
+  `mpd_wire::parse_directory_listing` is that parser for this project, shared
+  by the real MPD commands and the fixture loader alike.
+- **`find`/`lsinfo` send `Last-Modified` as the field immediately after every
+  `file:` line, before any tag.** A hand-rolled parser that treats
+  `Last-Modified` as a record boundary (as `parse_directory_listing` once
+  did, lumped in with `playlist`) will finalise the song right there and
+  silently drop every tag that follows — confirmed live: every real scan
+  produced 1,886 albums with `path` set and every other field `None`, not
+  caught by the committed fixture because it has no `Last-Modified` lines at
+  all. `Last-Modified` (like `Added`/`Format`/`Time`/the `*Sort` fields) must
+  fall through to `apply_tag`'s catch-all and be ignored, not treated as a
+  boundary — only `file`/`directory`/`playlist` actually start a new record.
 
 ## Load-bearing oddities — don't "clean these up"
 
