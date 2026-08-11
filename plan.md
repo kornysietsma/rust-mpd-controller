@@ -78,7 +78,7 @@ album-tool, 9 mpd-conf; clippy clean.
 
 ---
 
-## Step 3 — `crates/controller/src/menu.rs`: pure model additions
+## Step 3 — `crates/controller/src/menu.rs`: pure model additions — ✅ done
 
 Everything unit-testable: the summary-row text, the submenu's checked state,
 and the two new menu-id families. `render()` grows last, once the model
@@ -88,54 +88,76 @@ underneath it is settled — per the module's existing rule, no decisions go in
 - [x] `year_of(original_date: Option<&str>, date: Option<&str>) -> Option<&str>`
   (spec §4.2) — **already landed in step 2** (`AlbumInfo::year` needed it
   early), tests included. Nothing to do here.
-- [ ] `stars(rating: u8) -> String` — five glyphs, `★`/`☆` (U+2605/U+2606).
-- [ ] `AlbumControls { rating: Option<u8>, relisten: bool, classical: bool, spoken: bool, soundtrack: bool }`
+- [x] `stars(rating: u8) -> String` — five glyphs, `★`/`☆` (U+2605/U+2606).
+- [x] `AlbumControls { rating: Option<u8>, relisten: bool, classical: bool, spoken: bool, soundtrack: bool }`
   and `AlbumSection { summary: Option<String>, notice: Option<String>, controls: Option<AlbumControls> }`.
-- [ ] `album_summary(info: &AlbumInfo) -> Option<String>` (spec §4.1): joins
+- [x] `album_summary(info: &AlbumInfo) -> Option<String>` (spec §4.1): joins
   present parts with `" · "` in fixed order (year, stars, `↻` relisten,
   flag words); `None` if every part is absent.
-- [ ] `album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection`
+- [x] `album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection`
   (spec §8's table): maps each `AlbumState` variant plus the write-error flag
-  to the right `summary`/`notice`/`controls` combination.
-- [ ] `MenuModel` gains `pub album: AlbumSection`; `MenuModel::empty()` sets it
-  to the empty/absent case. `show_track_section()`'s `||` chain gains
-  `self.album.summary.is_some() || self.album.controls.is_some()` (a
-  `notice`-only row still needs the section to show, so include that arm too —
-  confirm against spec §8's "database unavailable" row, which must render even
-  with nothing else in the section).
-- [ ] New id prefixes `rating:` (`rating:4`) and `flag:` (`flag:classical:1`),
+  to the right `summary`/`notice`/`controls` combination. `write_error`
+  overrides the state-derived notice (see deviation note below); `summary`
+  and `controls` are unaffected by it, so a failed write still shows the row's
+  real, unchanged state alongside the notice.
+- [x] `MenuModel` gains `pub album_section: AlbumSection`; `MenuModel::empty()`
+  sets it to the empty/absent case. `show_track_section()`'s `||` chain gains
+  `!self.album_section.is_empty()` (`AlbumSection::is_empty()` checks all
+  three fields, so a `notice`-only row still shows the section).
+- [x] New id prefixes `rating:` (`rating:4`) and `flag:` (`flag:classical:1`),
   alongside the existing `album:`/`addto:`/`copy:` — builders and
   `strip_rating_id`/`strip_flag_id` parsers live here, next to the existing
-  ones. Note in a comment that the new `flag:` prefix must never start with
-  `album` (the existing `strip_album_id` uses `strip_prefix` unambiguously
-  today, but a careless future rename could collide).
-- [ ] `render()`: add the disabled summary/notice row(s) and the `Album ▸`
+  ones, with a comment noting the collision hazard from spec §7.3.
+- [x] `render()`: added the disabled summary/notice row(s) and the `Album ▸`
   submenu (`Rating ▸` with six `CheckMenuItem`s 0–5 prefixed by `stars()`, a
   separator, then the four flag `CheckMenuItem`s) per spec §3's worked
-  example. No new decisions here — it walks `AlbumSection` exactly as the rest
-  of `render()` walks `MenuModel`.
+  example.
+
+**Implementation deviations, folded into `spec.md` §7.3:**
+- **Field-name collision, resolved by renaming both sides.** `MenuModel`
+  already had a field called `album` (the album-copy row, `Option<CopyRow>`).
+  Rather than let the new `AlbumSection` field shadow it, the existing field
+  is now `album_title` and the new one is `album_section` — not the bare
+  `album` the spec prose used. Confirmed with Korny before implementing.
+- **`rating_checked(controls: &AlbumControls, rating: u8) -> bool`** was
+  pulled out as its own pure function (not listed in spec §7.3's function
+  list) so the "is this rating item the checked one" decision lives outside
+  `render()`, per the module's own rule, and so spec §10's "`AlbumControls`
+  with `rating: None`/`Some(n)`" test target has something concrete to call.
+- **`write_error` priority in `album_section`**: not fully specified by
+  spec §8's table (which lists the three notice conditions as if mutually
+  exclusive). Implemented as: `write_error` present → `"album database write
+  failed"`, overriding even the `Unavailable`-state notice; otherwise the
+  state's own notice. `summary`/`controls` always follow `state` regardless of
+  `write_error` — this is what makes "the re-read leaves the tick unchanged"
+  (spec §8) visible.
+- Two new unused-until-step-4 items — `album_section()` and
+  `strip_rating_id`/`strip_flag_id` — carry a targeted `#[allow(dead_code)]`
+  with a comment pointing at step 4, rather than a module-wide allow (menu.rs,
+  unlike album.rs, is mostly already live).
 
 **Unit tests** (spec §10's list, in full):
 - [x] `year_of` — already landed in step 2, see above.
-- [ ] `stars` — 0 through 5.
-- [ ] `album_summary` — the full worked-example table in spec §4.1, including
+- [x] `stars` — 0 through 5.
+- [x] `album_summary` — the full worked-example table in spec §4.1, including
   the omit-the-row case and `rating = 0` rendering as `☆☆☆☆☆` (not omitted).
-- [ ] `album_section` — each `AlbumState` variant → correct combination;
-  `Found` yields `controls`, the other three don't.
-- [ ] `AlbumControls` with `rating: None` leaves every rating item unchecked;
-  `rating: Some(n)` checks exactly the matching one.
-- [ ] `strip_rating_id`/`strip_flag_id` — valid ids, malformed payloads, ids
-  belonging to the other prefixes (extend the existing
+- [x] `album_section` — each `AlbumState` variant → correct combination;
+  `Found` yields `controls`, the other three don't; plus a `write_error`
+  interaction test (see deviation note above).
+- [x] `AlbumControls` with `rating: None` leaves every rating item unchecked;
+  `rating: Some(n)` checks exactly the matching one — via `rating_checked`.
+- [x] `strip_rating_id`/`strip_flag_id` — valid ids, malformed payloads, ids
+  belonging to the other prefixes (extended the existing
   `id_parsers_reject_the_other_family_and_static_ids` test).
-- [ ] `MenuModel::show_track_section()` with only album data present (no
-  track, no playlists) — still `true`.
+- [x] `MenuModel::show_track_section()` with only album data present (no
+  track, no playlists) — still `true`; plus a notice-only variant.
 
-**Verification**
-- [ ] `cargo test -p controller` green, new tests included.
-- [ ] Full workspace quality gate green.
-- [ ] `render()` itself stays unverified by `cargo test` (structurally
-  impossible, per `docs/architecture.md`) — covered instead by step 4's
-  manual checklist once `main.rs` actually calls it with live data.
+**Verification:** `cargo test -p controller` green — 81 tests (was 74 after
+step 2, +7 new). Full workspace quality gate green (44 album-tool, 51 albumdb,
+81 controller, 9 mpd-conf; fmt clean; clippy clean). `render()` itself stays
+unverified by `cargo test` (structurally impossible, per
+`docs/architecture.md`) — covered instead by step 4's manual checklist once
+`main.rs` actually calls it with live data.
 
 ---
 

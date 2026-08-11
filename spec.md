@@ -634,9 +634,22 @@ pub struct AlbumControls {
 }
 ```
 
-`MenuModel` gains `pub album: AlbumSection`, and `show_track_section()` gains
-the album section to its `||` chain, so an album with data still shows a track
-section even if nothing else in it applies.
+`MenuModel` gains `pub album_section: AlbumSection`, and `show_track_section()`
+gains the album section to its `||` chain, so an album with data still shows a
+track section even if nothing else in it applies.
+
+**Deviation from the field name above:** `MenuModel` already had a field
+called `album` — the album *copy* row (`Option<CopyRow>`, the "⧉ EELS TIME!"
+clipboard row shown in §3's diagram). Rather than let the new field shadow
+that name, both were renamed for clarity: the existing copy row is now
+`album_title` (it's fundamentally the album's title; being copyable is
+secondary), and the new field is `album_section`.
+
+`show_track_section()`'s new arm is `!self.album_section.is_empty()`
+(`AlbumSection::is_empty()` checks all three fields, not just `controls`) — a
+`notice`-only section (e.g. "album database unavailable") must still surface
+the track section, since that notice is the only thing telling the user the
+feature is broken.
 
 New pure functions, all unit-testable:
 
