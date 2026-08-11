@@ -1,5 +1,8 @@
 # MpdController
 
+> [!NOTE]
+> If you want to see the version described in [my blog post](https://blog.korny.info/2026/08/01/revisiting-personal-tools-in-rust-and-claude), it's tagged on GitHub at [blog-post-rust-claude](https://github.com/kornysietsma/rust-mpd-controller/tree/blog-post-rust-claude).
+
 A macOS menu-bar widget for controlling a local [MPD](https://www.musicpd.org/)
 (Music Player Daemon) instance, plus a registered `mpdcontrol://` URL scheme
 for fire-and-forget commands from anywhere on the system.
