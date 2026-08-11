@@ -3,7 +3,10 @@
 `albums.db` — a SQLite album database derived from the MPD library and
 MusicBrainz, maintained by the `album-tool` CLI (`crates/album-tool`) through
 the `albumdb` library crate (`crates/albumdb`). Consumed by hand in SQL, by
-agent skills, and eventually by the menu-bar app.
+agent skills, and by the menu-bar app, which displays the current album's row
+and can set its rating and category flags — see
+["The menu-bar app's read/write path"](#the-menu-bar-apps-readwrite-path)
+below.
 
 Notes here cover what isn't obvious from the code: the constraints, the
 invariants, and the measured facts that shouldn't be re-derived by guesswork.
@@ -40,7 +43,8 @@ is fatal — the difference is only in how each reports it: `album-tool` exits
 with an error on the CLI, the menu-bar app has no terminal to print to, so it
 puts the same failure up as a `⚠️` tray icon instead
 (`crates/controller/src/config.rs`'s `ConfigError`, see the README). It
-validates that `albums.db` exists at startup even though nothing reads it yet.
+validates that `albums.db` exists at startup, before either the MPD connection
+or the album-db worker below is started.
 
 ### `journal_mode = DELETE` is load-bearing
 
@@ -110,6 +114,42 @@ session. Measured behaviour:
 If you edit the database in a GUI tool, close it afterwards, and check for a
 stray `albums.db-wal` next to the database. While one exists, backups of it
 are not trustworthy.
+
+## The menu-bar app's read/write path
+
+`crates/controller/src/album.rs` runs a dedicated `std::thread` — never the
+main thread, which owns the `tao` event loop and must stay responsive — that
+owns its own `rusqlite::Connection` (`Send` but not `Sync`, so it never
+crosses a thread boundary once opened).
+
+- **Opens with `albumdb::open_existing`, never `open`.** `open` runs
+  `CREATE TABLE IF NOT EXISTS`, which would silently create an empty database
+  at a mistyped path, turning "my ratings vanished" into "the app works, the
+  data is gone". `open_existing` uses
+  `OpenFlags::SQLITE_OPEN_READ_WRITE` (no `SQLITE_OPEN_CREATE`), so a missing
+  file is an open-time error, not a fresh empty schema — race-free, unlike an
+  `exists()` check followed by an open. It still applies the same pragmas as
+  `open` (including the `journal_mode = DELETE` reset above), since a
+  database a GUI tool left in WAL should be converted back regardless of
+  which function opened it.
+- **Polls `PRAGMA data_version` every 3 seconds** to notice edits made by
+  anything else — `album-tool`, a GUI tool, hand SQL — and re-reads the
+  current album's row only when it changes. A menu click gets an immediate,
+  unconditional read/write instead of waiting for the next tick.
+- **The only writes it can make**: `set_rating` (rating 0–5, never `NULL` —
+  there's no "clear rating" item in the menu) and `set_flag` (the four
+  boolean columns). `set_rating` also clears `needs_relisten` in the same
+  `UPDATE`, on the theory that setting a rating is a decision that supersedes
+  a "revisit this" marker — all 17 `needs_relisten` albums were unrated when
+  this was measured, matching that workflow. One consequence worth knowing:
+  ticking `Relisten` and then setting a rating in the same menu session
+  silently drops the tick, since the two can't land in one click. See
+  [usage.md](usage.md) for the user-facing version of this.
+- **Never holds a transaction open between operations**, so it doesn't block
+  `album-tool`'s writes even though the connection itself is long-lived.
+- Every write is followed by a re-read, so a failed write is self-evident in
+  the menu — the tick you clicked simply isn't there — without the app having
+  to reason about partial failure separately.
 
 ## The measured baseline
 

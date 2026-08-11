@@ -1,13 +1,16 @@
 //! The album-database worker thread: owns the SQLite connection to
 //! `albums.db`, serving reads/writes requested by the main thread and
 //! polling for external changes (`album-tool`, a GUI tool, hand SQL). See
-//! `spec.md` §6 for the full design.
+//! `docs/architecture.md`'s "A third thread" section for why this runs on its
+//! own `std::thread` rather than a tokio task, and
+//! `docs/album-database.md`'s "The menu-bar app's read/write path" for the
+//! write semantics and the `data_version` polling design.
 //!
 //! Not unit-tested: the worker loop, `Worker::poll`, and the `data_version`
 //! polling all need a real (or at least real-ish) SQLite connection and a
-//! live timer, which is what running the app and following the manual
-//! checklist (`plan.md` step 4) is for. `albumdb`'s own test suite already
-//! covers the storage calls this module wraps.
+//! live timer, which is what running the app and verifying by hand is for.
+//! `albumdb`'s own test suite already covers the storage calls this module
+//! wraps.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -22,11 +25,12 @@ use crate::menu::year_of;
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 /// What the main thread asks of the worker.
-#[allow(clippy::enum_variant_names)] // `Set*` matches spec §7.2 exactly; not worth the rename.
+#[allow(clippy::enum_variant_names)] // `Set*` groups the three requests visibly; not worth the rename.
 pub enum AlbumRequest {
     /// The playing album changed (or there is none).
     SetCurrentAlbum(Option<String>),
-    /// `u8`, not `Option<u8>` — the menu cannot clear a rating (spec §4.3).
+    /// `u8`, not `Option<u8>`: the `Rating ▸` submenu has no "unrated" item,
+    /// so a click can never mean "clear the rating" (see `docs/usage.md`).
     SetRating { path: String, rating: u8 },
     SetFlag {
         path: String,
@@ -93,7 +97,7 @@ struct Worker {
     /// `None` until a connection has read the pragma at least once, so the
     /// first poll after (re)opening a connection always re-reads the watched
     /// row rather than assuming nothing changed — `data_version` is a
-    /// per-connection sequence, not a persistent one (spec §6.3).
+    /// per-connection sequence, not a persistent one.
     last_data_version: Option<i64>,
     /// The last `AlbumState` actually sent, so `poll` can dedupe against an
     /// unrelated write elsewhere in the database.
@@ -116,7 +120,8 @@ impl Worker {
     }
 
     /// Opens the connection if it isn't already open, using `open_existing`
-    /// so this thread can never create or migrate `albums.db` (spec §6.4).
+    /// so this thread can never create or migrate `albums.db` — see that
+    /// function's doc comment in `albumdb` for why that matters.
     fn ensure_conn(&mut self) -> anyhow::Result<&Connection> {
         if self.conn.is_none() {
             self.conn = Some(albumdb::open_existing(&self.db_path)?);
@@ -186,8 +191,7 @@ impl Worker {
     }
 
     /// Emits only if `state` differs from the last one sent — used by
-    /// `poll`, so a write elsewhere in the database doesn't churn the menu
-    /// (spec §6.3).
+    /// `poll`, so a write elsewhere in the database doesn't churn the menu.
     fn emit_if_changed(&mut self, state: AlbumState, on_event: &impl Fn(AlbumEvent)) {
         if state == self.last_state {
             return;
@@ -221,10 +225,12 @@ impl Worker {
         }
     }
 
-    /// Per spec §6.3: compares `PRAGMA data_version` to the last-seen value;
-    /// unchanged means nothing to do, changed means re-read the watched row
-    /// and emit only if the resulting state differs. A pragma error drops
-    /// the connection so the next tick retries against a fresh one.
+    /// Compares `PRAGMA data_version` to the last-seen value: unchanged means
+    /// nothing to do, changed means re-read the watched row and emit only if
+    /// the resulting state differs. A pragma error drops the connection so
+    /// the next tick retries against a fresh one. See
+    /// `docs/album-database.md`'s "The menu-bar app's read/write path" for
+    /// why `data_version` was chosen over `stat()`.
     fn poll(&mut self, on_event: &impl Fn(AlbumEvent)) {
         let conn = match self.ensure_conn() {
             Ok(conn) => conn,

@@ -201,7 +201,8 @@ fn main() -> Result<()> {
 
     // A plain `std::thread`, not a tokio task: `album::run` blocks (SQLite,
     // plus up to a 5s `busy_timeout`) and owns a `!Sync` `rusqlite::Connection`
-    // that must never leave the thread it was opened on (spec §6.1, §9).
+    // that must never leave the thread it was opened on. See
+    // docs/architecture.md's "A third thread" section.
     let (album_tx, album_rx) = mpsc::channel::<AlbumRequest>();
     let album_proxy = event_loop.create_proxy();
     std::thread::spawn(move || {
@@ -220,9 +221,9 @@ fn main() -> Result<()> {
     // reasoning as `current_url`, but for `rating:`/`flag:` clicks.
     let mut current_album_path: Option<String> = None;
     // Rebuilt on both an `MpdEvent` and a `UserEvent::Album`, since either
-    // alone must be able to produce a complete menu (spec §7.4): an
-    // `MpdEvent` rebuilds everything but carries the previous `album_section`
-    // forward, and a `UserEvent::Album` replaces only that field.
+    // alone must be able to produce a complete menu: an `MpdEvent` rebuilds
+    // everything but carries the previous `album_section` forward, and a
+    // `UserEvent::Album` replaces only that field.
     let mut model = menu::MenuModel::empty();
 
     event_loop.run(move |event, _window_target, control_flow| {
@@ -398,7 +399,7 @@ fn main() -> Result<()> {
                 };
                 // Recomputed from `current_url` rather than duplicated per
                 // arm above: `None` for both "nothing playing" and a
-                // library-root file with no parent directory (spec §4.3).
+                // library-root file with no parent directory.
                 current_album_path = current_url
                     .as_deref()
                     .and_then(menu::album_key)
@@ -412,9 +413,9 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::Album(event)) => {
-                // Replaces only `model.album_section`, per spec §7.4 — the
-                // rest of the menu is untouched, and the tray title never
-                // depends on album data.
+                // Replaces only `model.album_section` — the rest of the menu
+                // is untouched, and the tray title never depends on album
+                // data.
                 model.album_section =
                     menu::album_section(&event.state, event.write_error.as_deref());
                 match menu::render(&model) {

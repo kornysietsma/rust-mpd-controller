@@ -28,7 +28,7 @@ light — enough to be reliable for daily personal use, not production-grade.
 
 This tool creates a macOS application `MpdController.app` which interacts with the MPD music player daemon running on the computer.
 
-It has two interfaces - a toolbar widget which shows currently playing track and album, and has play controls and some playlist integration.
+It has two interfaces - a toolbar widget which shows currently playing track and album, and has play controls and some playlist integration. The toolbar widget also shows the current album's rating and category flags from the album database (below), and lets you set them.
 
 And it also implements a URI scheme so if you click a carefully crafted URI like `mpdcontrol://<command>` it passes the command to the same application for processing.
 
@@ -52,8 +52,14 @@ And it also implements a URI scheme so if you click a carefully crafted URI like
 Alongside the menu-bar app, this repo holds `album-tool` — a CLI that builds a
 SQLite database of every album in the MPD library, combining file tags,
 MusicBrainz genre data, and hand-entered ratings and category flags. It's
-queried by hand in SQL and by agent skills; the menu-bar app doesn't read it
-yet. See [docs/album-database.md](docs/album-database.md).
+queried by hand in SQL and by agent skills, and the menu-bar app displays the
+current album's row and can set its rating and flags — see
+[docs/album-database.md](docs/album-database.md) and
+[docs/usage.md](docs/usage.md).
+
+**One accepted limitation**: the menu-bar app only notices `albums.db` being
+*edited* (by `album-tool`, a GUI tool, or hand SQL), not being *replaced* —
+e.g. by restoring it from a backup. If you do that, restart the app.
 
 ```
 album-tool scan [--dry-run]     # read MPD, update the database
@@ -137,8 +143,8 @@ missing/unreadable `mpd.conf`, `config.toml` failing to parse (including an
 unrecognised key, which is usually a typo), the album database's location
 being unknown (no `music_directory` in `mpd.conf` and no `db_path` override),
 its directory being inaccessible, or `albums.db` itself not existing there —
-not read by the app yet, but checked at startup anyway since a broken path is
-far easier to diagnose here than the first time something tries to open it.
+checked at startup since a broken path is far easier to diagnose here than
+the first time the album section tries to open it.
 
 A `key_playlists` entry naming a playlist that doesn't exist in MPD is a
 smaller, non-fatal problem: logged at `warn` and just omitted from the menu.
@@ -146,8 +152,9 @@ smaller, non-fatal problem: logged at `warn` and just omitted from the menu.
 ## Using it
 
 The menu bar shows the current track, with play/next/clear controls, album
-navigation, playlist membership, and copy-to-clipboard rows for building
-`mpdcontrol://` links. That same URL scheme also works standalone,
+navigation, playlist membership, copy-to-clipboard rows for building
+`mpdcontrol://` links, and the current album's rating/category flags (editable
+from the same menu). That same URL scheme also works standalone,
 fire-and-forget, from anywhere on the system (e.g. an Obsidian link). See
 [docs/usage.md](docs/usage.md) for the full menu breakdown and the URL
 scheme's syntax, one-command-per-URI limitation, and known issues.
@@ -174,10 +181,12 @@ cargo test
 Unit tests only, covering the pure bits that are easy to get wrong: URL decode
 → tokenise → command parse, config loading and defaults, menu display logic
 (title truncation, paused prefix, icon/state selection), album traversal
-(run detection, jump targets, labels), playlist membership, menu-id
-round-tripping, and the copy rows' URI encoding — including a round trip back
-out through URL parse → percent-decode → tokenise, which is the only thing
-holding the two ends of that format together.
+(run detection, jump targets, labels), the album-database section's display
+logic (year extraction, star rendering, summary-row assembly, `rating:`/
+`flag:` id round-tripping), playlist membership, menu-id round-tripping, and
+the copy rows' URI encoding — including a round trip back out through URL
+parse → percent-decode → tokenise, which is the only thing holding the two
+ends of that format together.
 
 There is no GUI or integration test harness — see
 [docs/architecture.md](docs/architecture.md) for why, and

@@ -162,9 +162,8 @@ pub fn truncate(text: &str, max_chars: usize) -> String {
 }
 
 /// The year to show for an album: `original_date`'s year, falling back to
-/// `date`'s year, `None` if neither is present or usable. Added ahead of the
-/// rest of the album section (spec §4.2) because `album.rs`'s worker needs it
-/// to populate `AlbumInfo::year` from a database row.
+/// `date`'s year, `None` if neither is present or usable. `album.rs`'s
+/// worker calls this to populate `AlbumInfo::year` from a database row.
 ///
 /// Extraction is just the first four bytes of the string — `original_date`
 /// and `date` are always `YYYY`, `YYYY-MM` or `YYYY-MM-DD` — but guarded: only
@@ -322,7 +321,7 @@ fn album_nav(
 }
 
 // No variation selector needed on any of these — U+2605, U+2606 and U+21BB
-// have no emoji presentation form, unlike the icons above (spec §4.1).
+// have no emoji presentation form, unlike the icons above.
 const STAR_FILLED: char = '\u{2605}'; // ★
 const STAR_EMPTY: char = '\u{2606}'; // ☆
 const RELISTEN_ICON: char = '\u{21BB}'; // ↻
@@ -371,7 +370,7 @@ pub(crate) fn rating_checked(controls: &AlbumControls, rating: u8) -> bool {
 
 /// Everything the album-database part of the menu needs: the disabled
 /// summary/notice rows and the `Album ▸` submenu. Built from an `AlbumState`
-/// by `album_section` (spec §8).
+/// by `album_section`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumSection {
     /// The summary row text; `None` means emit no row.
@@ -401,10 +400,10 @@ impl AlbumSection {
     }
 }
 
-/// The disabled summary row's text (spec §4.1): year, star rating, relisten
-/// marker and flag words, joined with `" · "` in that fixed order. `None`
-/// when every part is absent — an unrated, undated, unflagged album gets no
-/// summary row at all, not an empty one.
+/// The disabled summary row's text: year, star rating, relisten marker and
+/// flag words, joined with `" · "` in that fixed order. `None` when every
+/// part is absent — an unrated, undated, unflagged album gets no summary row
+/// at all, not an empty one. See `docs/usage.md` for the rendered examples.
 pub(crate) fn album_summary(info: &AlbumInfo) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(year) = &info.year {
@@ -433,10 +432,9 @@ const WRITE_FAILED_NOTICE: &str = "album database write failed";
 const NOT_FOUND_SUMMARY: &str = "not in album database";
 
 /// Maps the worker's `AlbumState` (plus any pending write error) onto what
-/// the menu shows (spec §8). `write_error` takes priority over the
-/// state-derived notice — it persists until the next successful write,
-/// covering the case where the row is still readable but the last click
-/// didn't take.
+/// the menu shows. `write_error` takes priority over the state-derived
+/// notice — it persists until the next successful write, covering the case
+/// where the row is still readable but the last click didn't take.
 pub(crate) fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection {
     let notice = if write_error.is_some() {
         Some(WRITE_FAILED_NOTICE.to_string())
@@ -632,7 +630,10 @@ fn parse_flag_name(name: &str) -> Option<AlbumFlag> {
 }
 
 /// `value` is the value a click on this item should *write* — the target
-/// state, not a toggle instruction (spec §5.2).
+/// state, not a toggle instruction. That matters if the row changed
+/// underneath between the menu being built and the item being clicked: you
+/// get the value you actually clicked for, not an inversion of some state
+/// you never saw.
 fn flag_item_id(flag: AlbumFlag, value: bool) -> String {
     format!("{FLAG_ID_PREFIX}{}:{}", flag_name(flag), u8::from(value))
 }
@@ -675,7 +676,7 @@ pub fn strip_flag_id(id: &str) -> Option<&str> {
 /// the value a click should write. `None` for anything malformed — an
 /// unknown name, a missing `:`, or a value that isn't exactly `0`/`1`. Kept
 /// here rather than in `main.rs` so the flag-name spelling has one home, not
-/// two (spec §7.3: "`main.rs` never knows the wire format").
+/// two: `main.rs` dispatches on the parsed `AlbumFlag`, never the wire string.
 pub fn parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)> {
     let (name, value) = payload.split_once(':')?;
     let flag = parse_flag_name(name)?;
@@ -1473,7 +1474,7 @@ mod tests {
 
     #[test]
     fn album_summary_worked_examples() {
-        // spec §4.1's table, in order.
+        // Matches the rendered examples in docs/usage.md, in order.
         assert_eq!(
             album_summary(&info(Some("1996"), Some(4), true, false, false, true)),
             Some("1996 · ★★★★☆ · ↻ · Soundtrack".to_string())
@@ -1500,7 +1501,7 @@ mod tests {
     #[test]
     fn album_summary_rating_zero_is_distinct_from_no_rating() {
         // `rating = 0` renders as all-empty stars — visually distinct from
-        // the rating part being absent entirely (spec §4.1).
+        // the rating part being absent entirely.
         assert_eq!(
             album_summary(&info(None, Some(0), false, false, false, false)),
             Some("☆☆☆☆☆".to_string())
@@ -1557,7 +1558,8 @@ mod tests {
     fn album_section_write_error_overrides_the_notice_but_not_summary_or_controls() {
         // A failed write on an otherwise `Found` row still shows the row's
         // real (unchanged) summary and controls — the notice is additional,
-        // per spec §8's "the re-read leaves the tick unchanged".
+        // so a failed write is self-evident as "the tick I clicked isn't
+        // there" rather than a misleading optimistic checkmark.
         let album_info = info(Some("1996"), Some(4), false, false, false, false);
         let section = album_section(&AlbumState::Found(album_info), Some("disk full"));
         assert_eq!(section.notice, Some(WRITE_FAILED_NOTICE.to_string()));

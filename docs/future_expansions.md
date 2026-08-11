@@ -16,13 +16,14 @@ architectural change needed.
 
 - **Sticker metadata** — read/write MPD's sticker database (e.g. ratings),
   surfaced through the menu and/or the URL scheme.
-- **Everything that consumes the album database.** In rough order of value:
-  rating the current album from the menu; showing rating and original year in
-  album menu labels; "play a random 5-star album, excluding classical and
-  spoken word"; playing only the original tracks via `original_tracks`. The
-  database already holds all of this — see
-  [album-database.md](album-database.md). Nothing in `controller` reads
-  `albumdb` yet.
+- **More from the album database.** The menu bar now shows and edits the
+  current album's rating and category flags (see
+  [album-database.md](album-database.md#the-menu-bar-apps-readwrite-path) and
+  [usage.md](usage.md)). Not built yet: "play a random 5-star album,
+  excluding classical and spoken word"; playing only the original tracks via
+  `original_tracks`; surfacing any other column (`primary_genre`,
+  `tag_state`, `mb_sync_state`, `notes`) — the data's there, nothing's asked
+  for it yet.
 
 ## Deferred album-database features
 
@@ -54,6 +55,15 @@ change to pick up.
   receives a literal `&&` and does nothing. If it turns out to be missed, the
   shape is a native `playnow <path>` in `command.rs` (clear + add + play in
   one dispatch), *not* re-introducing shell semantics into the URL payload.
+- **`mpdcontrol://` verbs for rating and flagging.** Deliberately left out of
+  the menu-bar album editing above, to keep that change to one write path
+  into `albums.db`, not two. If it's ever added: `command::dispatch` falls
+  through to shelling out to `mpc` for anything it doesn't recognise, so new
+  verbs **must be matched in `parse` before that fallback**, or e.g.
+  `mpdcontrol://rate 5` runs `mpc rate 5` instead of touching the album
+  database. A path-taking variant deserves particular care: the README
+  already warns the URL scheme has no allow-list, and unlike playback
+  commands, an unwanted rating overwrite is neither noisy nor reversible.
 
 ## If a *controller* CLI is ever genuinely needed
 

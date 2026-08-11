@@ -21,6 +21,31 @@ Dropdown menu, top to bottom:
   the track's own file for the first, its parent directory (the whole album,
   since `add` is recursive) for the second. The album row is omitted for a
   library-root file, which has no album directory.
+- The current album's row from `albums.db` (see
+  [album-database.md](album-database.md)) — a disabled summary line, e.g.
+  `1996 · ★★★★☆ · ↻ · Soundtrack`, joining whichever of year / star rating /
+  `↻` (needs relisten) / category words are present; omitted entirely for an
+  unrated, undated, unflagged album rather than shown empty. If the database
+  can't be read, or has no row for the current path, a one-line notice takes
+  its place instead (`album database unavailable` / `not in album database`).
+- `Album ▶` — only when there's a database row to edit:
+  - `Rating ▶` — six items, `☆☆☆☆☆ 0` through `★★★★★ 5`, ticking the stored
+    value (none ticked if unrated). **There's no way to clear a rating back to
+    unrated from here** — once judged, `Relisten` is how you mark "rated, but
+    revisit it", not a way back to "not yet judged". **Setting a rating also
+    clears `Relisten`** in the same write, on the theory that rating something
+    is itself the decision `Relisten` was flagging as pending. If you want
+    both — a fresh rating *and* `Relisten` still ticked — set the rating
+    first and tick `Relisten` second; ticking it first and then rating loses
+    the tick. (Every click closes the menu regardless, so either order costs
+    two menu-opens; this just avoids losing data on the more common one.)
+  - A separator, then four checkable flags: `Relisten`, `Classical`, `Spoken`,
+    `Soundtrack`. Each writes its own column immediately on click.
+
+  Every click here re-reads the row and rebuilds the menu from what's
+  actually stored — so a write that silently failed shows up as "the tick I
+  clicked isn't there", with a `album database write failed` notice above it,
+  rather than a misleading optimistic checkmark.
 - `In playlists ▶` — every playlist containing the current song, disabled
   labels, informational only; omitted when the song is in none
 - `Add to ▶` — `key_playlists` minus any already containing the song; clicking

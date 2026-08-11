@@ -9,9 +9,12 @@ A Cargo workspace of four crates:
 | `crates/album-tool` | the `scan`/`sync`/`status` CLI that maintains it |
 | `crates/mpd-conf` | parses MPD's own `mpd.conf`; shared by both binaries |
 
-The two halves are otherwise independent — `controller` doesn't depend on
-`albumdb`. For the album side see [album-database.md](album-database.md); the
-rest of this document is about `controller`.
+`controller` depends on `albumdb` for exactly one thing: the menu-bar app's
+album-database thread (`src/album.rs`, below), which displays and edits the
+current album's row. Everything else about the album side — the schema,
+`album-tool`, the derivation logic — is independent; see
+[album-database.md](album-database.md) for that. The rest of this document is
+about `controller`.
 
 `mpd-conf` exists so neither binary duplicates settings MPD already owns: both
 infer the port (and the album database's location) from `mpd.conf` rather than
@@ -27,8 +30,9 @@ connection and any future in-memory state.
 |--------------------|--------------------------------------------------------|
 | `src/main.rs`      | startup, `tao` event loop, tray icon + menu, URL handling |
 | `src/mpd.rs`       | MPD connection, `idle` loop, reconnect/backoff, snapshots, queue/playlist caches |
+| `src/album.rs`     | album-database worker thread: reads/writes `albums.db` via `albumdb`, polls for external changes |
 | `src/command.rs`   | decoded command string → dispatch against MPD          |
-| `src/menu.rs`      | pure menu model (album nav, playlist membership, copy URIs) + thin render, title formatting/truncation |
+| `src/menu.rs`      | pure menu model (album nav, playlist membership, copy URIs, album-database section) + thin render, title formatting/truncation |
 | `src/config.rs`    | TOML config load + defaults                            |
 | `src/clipboard.rs` | pasteboard write (`arboard`), for the copy-URI menu rows |
 
@@ -79,6 +83,35 @@ sequenceDiagram
 
 The title and menu refresh **only when MPD state actually changes** —
 idle-driven, never polled.
+
+### A third thread: the album-db worker
+
+`src/album.rs` runs on its own plain `std::thread` — not a tokio task, and
+independent of the MPD idle loop above. Two reasons it's separate rather than
+folded into the tokio runtime:
+
+- It's blocking: `rusqlite::Connection` is synchronous, and `albumdb` sets a
+  5-second `busy_timeout` for contention with `album-tool`. A blocking call on
+  a tokio task would stall the runtime; on a dedicated thread it can never
+  touch the main thread's event loop.
+- The connection is `Send` but not `Sync`, so it's opened inside the thread
+  and never leaves it — no `Arc<Mutex<..>>` needed, since nothing else holds
+  a reference to it.
+
+It talks to the main thread the same way the MPD idle task does — an
+`EventLoopProxy` out, a channel in (`std::sync::mpsc` here, since requests are
+simple enums, not futures) — polling `PRAGMA data_version` every 3 seconds to
+notice edits from `album-tool`, a GUI tool, or hand SQL, and responding to
+`SetCurrentAlbum`/`SetRating`/`SetFlag` requests immediately rather than
+waiting for the next poll tick. The write semantics and the reasoning behind
+the poll interval and pragma choice are in
+[album-database.md](album-database.md#the-menu-bar-apps-readwrite-path).
+
+The main thread holds the latest `MenuModel` across iterations so either
+source can rebuild the menu independently: an `MpdEvent` rebuilds everything
+but carries the previous `album_section` forward, and an album-db event
+replaces only `album_section` and re-renders — neither has to wait on the
+other.
 
 ## Why there's no GUI test harness
 
