@@ -671,6 +671,18 @@ prefixes and their `strip_*` parsers — both halves stay in `menu.rs` so
 `main.rs` can log a malformed id distinctly from an id belonging to another
 item — matching how `strip_album_id` is already used.
 
+**Addition beyond this list, made while wiring `main.rs` in step 4:**
+`parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)>` parses
+`strip_flag_id`'s remainder the rest of the way, backed by private
+`flag_name`/`parse_flag_name` helpers (the inverse of each other) and a
+`flag_item_id` that takes `AlbumFlag` rather than a raw `&str`. Without it,
+`main.rs` would have to re-spell the four wire-format flag names itself to
+reconstruct an `AlbumFlag` from a click — which is exactly the leak "`main.rs`
+never knows the wire format" (above) already rules out for the other id
+families. `menu::album_key` also went from private to `pub(crate)` in this
+step, since `main.rs` needs it for `current_album_path` and
+`AlbumRequest::SetCurrentAlbum`.
+
 `render` gains the album rows. Per the module's own warning, **no decisions go
 in `render`** — it only walks `AlbumSection`.
 

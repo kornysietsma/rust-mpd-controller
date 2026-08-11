@@ -8,7 +8,6 @@
 //! live timer, which is what running the app and following the manual
 //! checklist (`plan.md` step 4) is for. `albumdb`'s own test suite already
 //! covers the storage calls this module wraps.
-#![allow(dead_code)] // Not wired into `main.rs` until plan.md step 4.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};

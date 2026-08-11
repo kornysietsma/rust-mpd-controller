@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use albumdb::AlbumFlag;
 use anyhow::Result;
 use mpd_client::responses::PlayState;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -26,7 +27,7 @@ pub struct QueueEntry {
 /// A song's album identity: two queue entries are the same album
 /// iff they share a parent directory. Chosen over the `album`/`albumartist`
 /// tags, which merge albums with the same name (like "Peter Gabriel" self titled!)
-fn album_key(url: &str) -> Option<&str> {
+pub(crate) fn album_key(url: &str) -> Option<&str> {
     url.rsplit_once('/').map(|(dir, _)| dir)
 }
 
@@ -436,7 +437,6 @@ const NOT_FOUND_SUMMARY: &str = "not in album database";
 /// state-derived notice — it persists until the next successful write,
 /// covering the case where the row is still readable but the last click
 /// didn't take.
-#[allow(dead_code)] // Called from the `UserEvent::Album` handler in plan.md step 4.
 pub(crate) fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSection {
     let notice = if write_error.is_some() {
         Some(WRITE_FAILED_NOTICE.to_string())
@@ -607,13 +607,34 @@ fn rating_item_id(rating: u8) -> String {
     format!("{RATING_ID_PREFIX}{rating}")
 }
 
-/// `name` is the flag's wire-format name (`relisten`/`classical`/`spoken`/
-/// `soundtrack`) — distinct from `albumdb::AlbumFlag::column()`'s SQL column
-/// names, which are an internal `albumdb` detail this module has no reason to
-/// leak into the menu's ids. `value` is the value a click on this item should
-/// *write* — the target state, not a toggle instruction (spec §5.2).
-fn flag_item_id(name: &str, value: bool) -> String {
-    format!("{FLAG_ID_PREFIX}{name}:{}", u8::from(value))
+/// `flag`'s wire-format name (`relisten`/`classical`/`spoken`/`soundtrack`) —
+/// distinct from `AlbumFlag::column()`'s SQL column names, which are an
+/// internal `albumdb` detail this module has no reason to leak into the
+/// menu's ids. The inverse of `parse_flag_name`.
+fn flag_name(flag: AlbumFlag) -> &'static str {
+    match flag {
+        AlbumFlag::Relisten => "relisten",
+        AlbumFlag::Classical => "classical",
+        AlbumFlag::Spoken => "spoken",
+        AlbumFlag::Soundtrack => "soundtrack",
+    }
+}
+
+/// The inverse of `flag_name`, or `None` for anything else.
+fn parse_flag_name(name: &str) -> Option<AlbumFlag> {
+    match name {
+        "relisten" => Some(AlbumFlag::Relisten),
+        "classical" => Some(AlbumFlag::Classical),
+        "spoken" => Some(AlbumFlag::Spoken),
+        "soundtrack" => Some(AlbumFlag::Soundtrack),
+        _ => None,
+    }
+}
+
+/// `value` is the value a click on this item should *write* — the target
+/// state, not a toggle instruction (spec §5.2).
+fn flag_item_id(flag: AlbumFlag, value: bool) -> String {
+    format!("{FLAG_ID_PREFIX}{}:{}", flag_name(flag), u8::from(value))
 }
 
 /// The song-id text of an album-nav menu id, or `None` if `id` isn't one.
@@ -639,7 +660,6 @@ pub fn strip_copy_id(id: &str) -> Option<&str> {
 /// isn't one. Parsing to `u8` is left to the caller, so it can log a
 /// malformed id distinctly from an id belonging to some other item — same
 /// pattern as `strip_album_id`.
-#[allow(dead_code)] // Wired into dispatch in plan.md step 4.
 pub fn strip_rating_id(id: &str) -> Option<&str> {
     id.strip_prefix(RATING_ID_PREFIX)
 }
@@ -647,9 +667,24 @@ pub fn strip_rating_id(id: &str) -> Option<&str> {
 /// The `"<name>:<0|1>"` remainder of a `flag:` menu id, or `None` if `id`
 /// isn't one. Splitting the flag name from the target value is left to the
 /// caller, same pattern as `strip_rating_id` above.
-#[allow(dead_code)] // Wired into dispatch in plan.md step 4.
 pub fn strip_flag_id(id: &str) -> Option<&str> {
     id.strip_prefix(FLAG_ID_PREFIX)
+}
+
+/// Parses `strip_flag_id`'s output the rest of the way: the flag it names and
+/// the value a click should write. `None` for anything malformed — an
+/// unknown name, a missing `:`, or a value that isn't exactly `0`/`1`. Kept
+/// here rather than in `main.rs` so the flag-name spelling has one home, not
+/// two (spec §7.3: "`main.rs` never knows the wire format").
+pub fn parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)> {
+    let (name, value) = payload.split_once(':')?;
+    let flag = parse_flag_name(name)?;
+    let value = match value {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    Some((flag, value))
 }
 
 /// Turns an already-computed `MenuModel` into `muda` items. Every decision
@@ -734,14 +769,14 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
             album_submenu.append(&rating_submenu)?;
             album_submenu.append(&PredefinedMenuItem::separator())?;
 
-            for (name, label, checked) in [
-                ("relisten", "Relisten", controls.relisten),
-                ("classical", "Classical", controls.classical),
-                ("spoken", "Spoken", controls.spoken),
-                ("soundtrack", "Soundtrack", controls.soundtrack),
+            for (flag, label, checked) in [
+                (AlbumFlag::Relisten, "Relisten", controls.relisten),
+                (AlbumFlag::Classical, "Classical", controls.classical),
+                (AlbumFlag::Spoken, "Spoken", controls.spoken),
+                (AlbumFlag::Soundtrack, "Soundtrack", controls.soundtrack),
             ] {
                 album_submenu.append(&CheckMenuItem::with_id(
-                    flag_item_id(name, !checked),
+                    flag_item_id(flag, !checked),
                     label,
                     true,
                     checked,
@@ -1355,6 +1390,30 @@ mod tests {
     }
 
     #[test]
+    fn flag_payload_round_trips_every_flag_and_value() {
+        for flag in [
+            AlbumFlag::Relisten,
+            AlbumFlag::Classical,
+            AlbumFlag::Spoken,
+            AlbumFlag::Soundtrack,
+        ] {
+            for value in [false, true] {
+                let id = flag_item_id(flag, value);
+                let payload = strip_flag_id(&id).unwrap();
+                assert_eq!(parse_flag_payload(payload), Some((flag, value)));
+            }
+        }
+    }
+
+    #[test]
+    fn parse_flag_payload_rejects_malformed_input() {
+        assert_eq!(parse_flag_payload("classical"), None); // no ':'
+        assert_eq!(parse_flag_payload("unknown:1"), None); // bad name
+        assert_eq!(parse_flag_payload("classical:2"), None); // bad value
+        assert_eq!(parse_flag_payload("classical:"), None);
+    }
+
+    #[test]
     fn id_parsers_reject_the_other_family_and_static_ids() {
         // What stops dispatch firing the wrong branch: each parser must not
         // claim ids belonging to the other family or to a static item.
@@ -1371,7 +1430,7 @@ mod tests {
         assert_eq!(strip_copy_id(QUIT_ID), None);
 
         let rating_id = rating_item_id(4);
-        let flag_id = flag_item_id("classical", true);
+        let flag_id = flag_item_id(AlbumFlag::Classical, true);
         assert_eq!(strip_album_id(&rating_id), None);
         assert_eq!(strip_addto_id(&rating_id), None);
         assert_eq!(strip_copy_id(&rating_id), None);

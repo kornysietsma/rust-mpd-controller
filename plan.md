@@ -161,7 +161,7 @@ unverified by `cargo test` (structurally impossible, per
 
 ---
 
-## Step 4 — `crates/controller/src/main.rs`: wiring, then manual QA
+## Step 4 — `crates/controller/src/main.rs`: wiring, then manual QA — ✅ done
 
 Connects the worker (step 2) and the model (step 3) to the event loop. This is
 the step where the feature becomes observable, so its verification is the
@@ -170,56 +170,82 @@ surface left after step 3.
 
 - [x] `mod album;` — already landed in step 2 (`album.rs` needed it to compile
   at all). Nothing to do here.
-- [ ] New `UserEvent::Album(AlbumEvent)` variant.
-- [ ] Spawn the worker as a plain `std::thread` (not tokio — blocking,
-  long-lived, owns a `!Sync` resource) right after the existing
+- [x] New `UserEvent::Album(AlbumEvent)` variant.
+- [x] Spawned the worker as a plain `std::thread` right after the existing
   `runtime.spawn(mpd::run(...))`, with its own `EventLoopProxy` clone and an
-  `mpsc::channel()` whose `Sender` is held alongside `current_client` etc.
-- [ ] Hold `current_album_path: Option<String>` — the path the menu's
-  `Album ▸` submenu was built from, so a `rating:`/`flag:` click knows what to
-  write. Same pattern as the existing `current_url`.
-- [ ] Hold the last `MenuModel` across event-loop iterations (the one real
-  refactor per spec §7.4): on an `MpdEvent`, rebuild everything as today, then
-  carry the *previous* model's `album` field onto the new one; on
-  `UserEvent::Album`, replace only `model.album` (via `menu::album_section`)
-  and re-render. `MenuModel` is already fully owned data, so this needs no
-  lifetime work — a plain `MenuModel` local, reassigned each branch.
-- [ ] On every `MpdEvent`, send
-  `AlbumRequest::SetCurrentAlbum(album_key(url).map(str::to_string))` (or
-  `None` when nothing's playing/library-root) to the worker.
-- [ ] Dispatch `rating:`/`flag:` menu-event ids (via `menu::strip_rating_id`/
-  `strip_flag_id`) to `AlbumRequest::SetRating`/`SetFlag`, using
-  `current_album_path`; log-and-ignore (matching the existing `addto:`
-  no-current-song handling) if there's no current album to act on.
-- [ ] Remove the temporary `#[allow(dead_code)]` from `album.rs` now that
-  `main.rs` uses every public item in it.
+  `mpsc::channel()` whose `Sender` (`album_tx`) is held alongside
+  `current_client` etc.
+- [x] Hold `current_album_path: Option<String>`, recomputed once from
+  `current_url` after the `MpdEvent` match (both arms already set
+  `current_url`) rather than duplicated per arm.
+- [x] Hold the last `MenuModel` across event-loop iterations: on an
+  `MpdEvent`, rebuild everything, then carry the *previous* model's
+  `album_section` onto the new one; on `UserEvent::Album`, replace only
+  `model.album_section` (via `menu::album_section`) and re-render.
+- [x] On every `MpdEvent`, send `AlbumRequest::SetCurrentAlbum(current_album_path.clone())`.
+- [x] Dispatch `rating:`/`flag:` menu-event ids to `AlbumRequest::SetRating`/
+  `SetFlag`, using `current_album_path`; log-and-ignore if there's no current
+  album to act on.
+- [x] Removed the `#[allow(dead_code)]` from `album.rs` (module-level) and
+  from `menu.rs`'s `album_section`/`strip_rating_id` — everything's reachable
+  from `main()` now.
 
-**Manual verification** (spec §10, run against the real `albums.db` — back it
-up first, since this is the first step that writes to it):
-1. [ ] Play an album with a rating and a year → summary row appears correctly.
-2. [ ] Play an album with no rating/year/flags → no summary row.
-3. [ ] Set a rating from the menu; reopen; tick moved. Confirm with
-   `sqlite3 <music_dir>/albums.db 'select rating, rated_at, needs_relisten from albums where path = ...'`.
-4. [ ] Tick `Relisten`, then set a rating → relisten tick is gone (spec §5.1's
-   accepted tradeoff).
-5. [ ] Toggle `Classical`, `Spoken`, `Soundtrack` individually; confirm in SQL.
-6. [ ] Run `album-tool scan` while the app is running → menu reflects any
-   change within ~3s.
-7. [ ] Edit a rating with `sqlite3` directly → menu follows within ~3s.
-8. [ ] `chmod 000 albums.db` for a few seconds → `album database unavailable`
-   row appears, then clears once permissions restore; playback controls kept
-   working throughout.
-9. [ ] Switch the database to WAL from another tool
-   (`sqlite3 albums.db 'PRAGMA journal_mode=WAL;'`), edit a rating there,
-   confirm the menu still follows within ~3s. Then restart the app with
-   nothing else holding the file, confirm `albums.db-wal` is gone and the mode
-   is back to `delete`.
-10. [ ] Play a track at the library root (no parent directory) → no album
-    rows, no panic.
+**One addition beyond spec §7.3's function list, folded in here rather than
+back into step 3**: `menu::parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)>`,
+plus private `flag_name`/`parse_flag_name` helpers, and `flag_item_id` now
+takes `AlbumFlag` instead of a raw `&str`. Without it, `main.rs` would have to
+re-spell the four wire-format flag names itself to turn `strip_flag_id`'s
+remainder back into an `AlbumFlag` — exactly the "`main.rs` never knows the
+wire format" split spec §7.3 already commits to for the other id families.
+`menu::album_key` also went from private to `pub(crate)`, since `main.rs`
+needs it both to compute `current_album_path` and to build
+`AlbumRequest::SetCurrentAlbum`.
 
-**Verification**
-- [ ] Full workspace quality gate green.
-- [ ] All ten manual checks above pass against the real database.
+**Manual verification**, run by Korny against the real `albums.db` (backed up
+first to the session scratchpad):
+1. [x] Rated album shows correct summary row.
+2. [x] Unrated/undated/unflagged album shows no summary row.
+3. [x] Setting a rating from the menu moves the tick and lands correctly in
+   SQL.
+4. [x] Relisten-then-rate tradeoff behaves as documented.
+5. [x] `Classical`/`Spoken`/`Soundtrack` toggle correctly.
+6. [x] `album-tool scan` while running is picked up within ~3s.
+7. [x] A direct `sqlite3` edit is picked up within ~3s.
+8. [x] **Behaves differently from the checklist's literal wording, for a
+   well-understood reason, not a bug**: `chmod 000 albums.db` had no visible
+   effect until the app was restarted, at which point "unavailable" appeared
+   and cleared correctly. This is POSIX file semantics, not a gap in the
+   polling design — permission bits are only checked at `open()`, so an
+   already-open `rusqlite::Connection`'s reads keep succeeding regardless of
+   what the mode bits do underneath it. No code change indicated; the
+   `open_existing`-fails-cleanly path (exercised by restart, and by "db
+   missing at startup") already covers the real-world equivalent.
+   - [x] Playback controls kept working throughout, as required.
+9. Skipped — Korny judged the WAL-detection path not worth testing manually
+   right now. Deferred, not failed; re-run if `data_version` polling is ever
+   suspect.
+10. Skipped — a library-root file isn't practically playable via `mpc` in
+    Korny's setup, so this is untested in the running app. The pure-logic
+    equivalent (`album_copy_row_is_absent_for_a_library_root_file`,
+    `menu.rs`) is covered and green; accepted as sufficient for now.
+
+**Not a regression — investigated and explained:** Korny initially reported
+Prev/Next Album missing. Cause: MPD's `random` mode was on in his session,
+and `show_album_nav()` (untouched by this change, confirmed via `git diff`)
+deliberately hides album nav whenever `random` is on, since queue-order jumps
+are meaningless in random playback — this predates the album-data feature
+entirely.
+
+**Operational note, no code change:** the `mpdcontrol://` URL handler is
+registered to the installed `/Applications/MpdController.app`, not a `cargo
+run` dev binary, so Korny had to `./install.sh` to test URL-triggered
+behavior end-to-end alongside the menu changes.
+
+**Verification:** Full workspace quality gate green (`cargo fmt --all`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
+--workspace`) — 44 album-tool, 51 albumdb, 83 controller (was 81, +2 for
+`parse_flag_payload`), 9 mpd-conf. Manual checklist 1–8 pass; 9–10 explicitly
+deferred (see above), not failures.
 
 ---
 
