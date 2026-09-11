@@ -33,13 +33,3 @@ arboard = { version = "3.6.1", default-features = false }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
-
-[package.metadata.bundle]
-name = "MpdController"
-identifier = "com.sietsma.mpdcontroller"
-icon = ["assets/icon.icns"]
-copyright = "Copyright (c) 2026 Korny Sietsma"
-category = "public.app-category.music"
-short_description = "Menu-bar MPD controller"
-osx_url_schemes = ["mpdcontrol"]
-osx_info_plist_exts = ["assets/info-plist-ext.plist"]

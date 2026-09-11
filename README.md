@@ -94,17 +94,13 @@ the module breakdown and a diagram of the threading model.
 ./install.sh
 ```
 
-This runs `cargo bundle --release -p controller` and copies `MpdController.app` into
-`/Applications`. macOS only honours the `mpdcontrol://` URL scheme
+This builds the release binary, assembles `MpdController.app` around it
+(using `crates/controller/assets/Info.plist` and the icon), ad-hoc signs it,
+and copies it into `/Applications`. Only Cargo and tools that ship with macOS
+are needed. macOS only honours the `mpdcontrol://` URL scheme
 registration for apps living in `/Applications`, and only after the app has
 been launched at least once — so after installing, launch it once from
 `/Applications` or Spotlight.
-
-`cargo-bundle` is required to build the bundle:
-
-```sh
-cargo install cargo-bundle
-```
 
 To run without bundling/installing, during development:
 

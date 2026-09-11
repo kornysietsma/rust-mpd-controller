@@ -107,10 +107,16 @@ event_loop.set_activation_policy(ActivationPolicy::Accessory);
 (via `tao::platform::macos::EventLoopExtMacOS`). Both halves are needed —
 removing either brings the Dock icon back.
 
-Related packaging quirk: `cargo-bundle` has no top-level key for
-`LSUIElement`, so it's supplied via
-`osx_info_plist_exts = ["assets/info-plist-ext.plist"]`, whose contents get
-merged into `Info.plist` verbatim.
+The plist half is `LSUIElement` in `assets/Info.plist`, which `install.sh`
+copies into the bundle as-is, filling in only the version keys.
+
+## No packaging tool, deliberately
+
+`install.sh` builds the `.app` by hand instead of using `cargo-bundle`. The
+bundle is just a directory, and the app is only ever installed from source.
+`cargo-bundle` was overkill. It compiles ~500 crates and links
+`Security.framework`, the keychain API, via `reqwest`/`native-tls`, even
+though nothing on the macOS path uses it.
 
 ## The `mpc` fallback needs absolute Homebrew paths
 
