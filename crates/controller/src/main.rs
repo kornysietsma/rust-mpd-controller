@@ -82,6 +82,20 @@ fn init_logging() -> Result<()> {
     Ok(())
 }
 
+/// On macOS, `tao`'s event loop calls our closure from inside an
+/// Objective-C callback (menu clicks, window events, …) — an `extern "C"`
+/// boundary that Rust cannot unwind across. A panic there aborts the process
+/// immediately, before the default panic handler's message reaches stderr,
+/// so a crash report alone shows only `SIGABRT` in `send_event` with no hint
+/// of what actually panicked. This hook writes the panic message and
+/// location to our own log file first, since that write reliably lands
+/// before the abort that follows it.
+fn set_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        error!("panic: {info}");
+    }));
+}
+
 enum UserEvent {
     TrayIconEvent,
     MenuEvent(MenuEvent),
@@ -160,6 +174,7 @@ fn run_error_mode(err: config::ConfigError) -> Result<()> {
 
 fn main() -> Result<()> {
     init_logging()?;
+    set_panic_hook();
     info!("MpdController starting");
 
     let config = match config::load() {
