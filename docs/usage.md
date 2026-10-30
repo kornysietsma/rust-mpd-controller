@@ -3,7 +3,7 @@
 By default the menu bar shows just the play state — `▶`, `⏸` or `⏹` — with
 the track itself as the first row of the dropdown. Set `full_title = true` in
 `config.toml` to show the current track as `Title - Artist` instead
-(truncated — the dropdown's track row always shows it in full), prefixed with
+(truncated to 25 chars — the dropdown's track row has more room), prefixed with
 `⏸ ` while paused (outside the truncation budget, so the track text truncates
 the same whether playing or paused). It's opt-in because on a MacBook with a
 notch, macOS silently hides menu-bar items that don't fit beside it — see
@@ -12,18 +12,24 @@ when connected but nothing is queued, or `🔇` when MPD is unreachable — the
 app keeps retrying with backoff and recovers automatically, no restart
 needed.
 
-Dropdown menu, top to bottom:
+Dropdown menu, top to bottom — every variable-length row (track, next,
+album, album navigation) is cut at the same `menu_text_max_chars` limit,
+default 60:
 
-- `⧉ <Title - Artist>` — the current track, in full. Clicking it copies an
+- `⧉ <Title - Artist>` — the current track. Clicking it copies an
   `mpdcontrol://add "<path>"` URI for the track's file, same as the album row
   below.
-- `⏯ Play/Pause`, `⏭ Next`, `⏹ Clear`
+- `⏯ Play/Pause`, `⏭ Next: <Title - Artist>`, `⏹ Clear` — the next track is
+  whatever MPD reports as next (so `random`/`repeat`/`single` are already
+  accounted for), with the artist omitted when it's the same as the current
+  track's. Just `⏭ Next` when there isn't
+  one.
 - Album navigation (only while inside a same-directory run of 5+ tracks and
   `random` is off — see [implementation-details.md](implementation-details.md)):
   - `⏮⏮ Start of Album` on track 2+ of an album, or `⏮⏮ Prev Album: <name>` on
     track 1
   - `⏭⏭ Next Album: <name>`, omitted at the last album
-- `⧉ <Album>` — the current album, in full. Clicking it copies an
+- `⧉ <Album>` — the current album. Clicking it copies an
   `mpdcontrol://add "<path>"` URI to the clipboard, ready to paste into
   Obsidian or anywhere else that takes a link — the track's parent directory,
   i.e. the whole album, since `add` is recursive. Omitted for a library-root

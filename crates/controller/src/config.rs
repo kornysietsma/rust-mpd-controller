@@ -10,12 +10,13 @@ use serde::Deserialize;
 const DEFAULT_MPD_HOST: &str = "localhost";
 const DEFAULT_MPD_PORT: u16 = 6600;
 const DB_FILENAME: &str = "albums.db";
+const DEFAULT_MENU_TEXT_MAX_CHARS: usize = 60;
 
 /// `~/.config/mpd-controller/config.toml`, as written by a person. Every
 /// connection field is optional: unset means "take it from MPD's own
 /// `mpd.conf`", which is almost always what's wanted. `key_playlists` has no
 /// equivalent there, so it only ever comes from this file — and likewise
-/// `full_title`.
+/// `full_title` and `menu_text_max_chars`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FileConfig {
@@ -32,6 +33,10 @@ struct FileConfig {
     /// glyph. Opt-in: on a notched MacBook screen a wide status item can be
     /// silently hidden by macOS when the menu bar runs out of room.
     full_title: bool,
+    /// Where dropdown labels (track, next, album, album-nav) are cut. 60
+    /// shows ~93% of `Title - Artist` strings and ~98% of album names in this
+    /// library in full; the longest are 293 and 190 chars.
+    menu_text_max_chars: Option<usize>,
 }
 
 /// The resolved settings the app actually runs on. `db_path` is guaranteed
@@ -46,6 +51,7 @@ pub struct Config {
     pub db_path: PathBuf,
     pub key_playlists: Vec<String>,
     pub full_title: bool,
+    pub menu_text_max_chars: usize,
 }
 
 /// Precedence-resolved settings before the database's presence has been
@@ -58,6 +64,7 @@ struct ResolvedConfig {
     db_path: Option<PathBuf>,
     key_playlists: Vec<String>,
     full_title: bool,
+    menu_text_max_chars: usize,
 }
 
 impl Default for ResolvedConfig {
@@ -68,6 +75,7 @@ impl Default for ResolvedConfig {
             db_path: None,
             key_playlists: Vec::new(),
             full_title: false,
+            menu_text_max_chars: DEFAULT_MENU_TEXT_MAX_CHARS,
         }
     }
 }
@@ -155,6 +163,7 @@ pub fn load() -> Result<Config, ConfigError> {
         db_path,
         key_playlists: resolved.key_playlists,
         full_title: resolved.full_title,
+        menu_text_max_chars: resolved.menu_text_max_chars,
     })
 }
 
@@ -197,6 +206,9 @@ fn resolve(file: FileConfig, conf: Option<&MpdConf>) -> ResolvedConfig {
         }),
         key_playlists: file.key_playlists,
         full_title: file.full_title,
+        menu_text_max_chars: file
+            .menu_text_max_chars
+            .unwrap_or(DEFAULT_MENU_TEXT_MAX_CHARS),
     }
 }
 
@@ -260,6 +272,7 @@ mod tests {
                 db_path = "/elsewhere/albums.db"
                 key_playlists = ["Five stars", "My Top Rated"]
                 full_title = true
+                menu_text_max_chars = 80
             "#,
         );
 
@@ -275,6 +288,7 @@ mod tests {
                 db_path: Some(PathBuf::from("/elsewhere/albums.db")),
                 key_playlists: vec!["Five stars".to_string(), "My Top Rated".to_string()],
                 full_title: true,
+                menu_text_max_chars: Some(80),
             }
         );
     }

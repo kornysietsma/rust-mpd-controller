@@ -132,6 +132,8 @@ fn queue_entries(queue: &[SongInQueue]) -> Vec<menu::QueueEntry> {
         .map(|entry| menu::QueueEntry {
             url: entry.song.url.clone(),
             album: entry.song.album().map(str::to_string),
+            title: entry.song.title().map(str::to_string),
+            artists: entry.song.artists().to_vec(),
             id: entry.id.0,
         })
         .collect()
@@ -188,6 +190,7 @@ fn main() -> Result<()> {
     // from `mpd::run`'s tokio task.
     let key_playlists = config.key_playlists.clone();
     let full_title = config.full_title;
+    let menu_text_max_chars = config.menu_text_max_chars;
     let db_path = config.db_path.clone();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -368,6 +371,7 @@ fn main() -> Result<()> {
                             .and_then(|(pos, _)| Some((pos.0, entries.get(pos.0)?)))
                             .map(|(pos, entry)| menu::CurrentTrack {
                                 pos,
+                                next_pos: snapshot.status.next_song.map(|(pos, _)| pos.0),
                                 url: &entry.url,
                                 title: snapshot.song.as_ref().and_then(|song| song.title()),
                                 artists: snapshot
@@ -397,6 +401,7 @@ fn main() -> Result<()> {
                             current,
                             &playlists_for_url,
                             &known_key_playlists,
+                            menu_text_max_chars,
                         );
                         // The album-db worker's state is independent of MPD's
                         // — carry the previous value forward rather than

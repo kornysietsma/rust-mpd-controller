@@ -283,9 +283,13 @@ and "Prev Album: …") on purpose — the icon stays put while only the label
 changes, so the row doesn't appear to flicker between two different items as
 you move through an album.
 
-Album names in these labels are truncated to 40 chars (159 of 1,845 titles are
-longer; the longest is 192), applied to the name alone so the `Next Album: `
-prefix is never pushed off.
+These labels, like every other variable-length dropdown row, are cut at
+`menu_text_max_chars` (default 60), applied to the whole label — cutting the
+tail can't reach the `Next Album: ` prefix at any sensible limit. Measured
+on this library: 60 shows ~98% of 1,854 album names in full (41 are longer;
+the longest is 190) and ~93% of 29,028 `Title - Artist` strings (2,053
+longer; the longest 293). One limit for all of them because a dropdown is as
+wide as its widest row, so per-row limits just make it look uneven.
 
 ## Two different icons, don't conflate them
 

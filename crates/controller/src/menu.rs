@@ -21,6 +21,8 @@ pub const QUIT_ID: &str = "quit";
 pub struct QueueEntry {
     pub url: String,
     pub album: Option<String>,
+    pub title: Option<String>,
+    pub artists: Vec<String>,
     pub id: u64,
 }
 
@@ -65,7 +67,6 @@ fn show_album_nav(random: bool, run_len: usize) -> bool {
 }
 
 const ALBUM_NAV_MIN_RUN: usize = 5;
-const ALBUM_NAME_MAX_CHARS: usize = 40;
 
 /// An album-navigation jump target. `label` is the complete row
 /// text, so `render` and click dispatch never branch on which of the prev-item
@@ -81,15 +82,14 @@ fn directory_basename(url: &str) -> Option<&str> {
     Some(dir.rsplit('/').next().unwrap_or(dir))
 }
 
-/// Truncation is applied to the name alone, so a long album title
-/// never pushes the `Next Album: ` prefix off the menu.
+/// Untruncated — `model` truncates every finished dropdown label in one
+/// place, so they all share one limit.
 fn album_display_name(entry: &QueueEntry) -> String {
-    let name = entry
+    entry
         .album
         .clone()
         .or_else(|| directory_basename(&entry.url).map(str::to_string))
-        .unwrap_or_else(|| entry.url.clone());
-    truncate(&name, ALBUM_NAME_MAX_CHARS)
+        .unwrap_or_else(|| entry.url.clone())
 }
 
 /// Next-album target: the run immediately following the current
@@ -293,9 +293,9 @@ pub struct CopyRow {
     pub uri: String,
 }
 
-/// The current track's copy row, labelled with its full untruncated
-/// "Title - Artist" text — this row is also what shows the part the tray
-/// title had to cut.
+/// The current track's copy row, labelled with its "Title - Artist" text —
+/// only cut at the dropdown's limit, so this row is also what shows the part
+/// the tray title had to cut.
 fn track_copy_row(current: &CurrentTrack<'_>) -> CopyRow {
     CopyRow {
         label: format_track(current.title, current.url, current.artists),
@@ -457,6 +457,9 @@ pub fn album_section(state: &AlbumState, write_error: Option<&str>) -> AlbumSect
 /// tray title — that's set independently via `Display`.
 pub struct MenuModel {
     pub track: Option<CopyRow>,
+    /// The `⏭ Next` row's complete text, naming the next track when MPD
+    /// reports one.
+    pub next_label: String,
     pub album_title: Option<CopyRow>,
     pub prev_album: Option<AlbumJump>,
     pub next_album: Option<AlbumJump>,
@@ -472,6 +475,7 @@ impl MenuModel {
     pub fn empty() -> Self {
         MenuModel {
             track: None,
+            next_label: next_label(None),
             album_title: None,
             prev_album: None,
             next_album: None,
@@ -516,13 +520,42 @@ impl MenuModel {
 /// with no meaning that every consumer had to defend against anyway.
 pub struct CurrentTrack<'a> {
     pub pos: usize,
+    /// MPD's `nextsong` position — already accounts for `random`, `repeat`
+    /// and `single`, so nothing here re-derives play order from the queue.
+    /// Lives here because MPD only reports it alongside a current song.
+    pub next_pos: Option<usize>,
     pub url: &'a str,
     pub title: Option<&'a str>,
     pub artists: &'a [String],
 }
 
+/// The next track as `Title - Artist`, but with the artist dropped when it's the same as the current track's, which
+/// on an album is almost always, and would just repeat what the menu's first
+/// row already says.
+fn next_track_text(queue: &[QueueEntry], current: &CurrentTrack<'_>) -> Option<String> {
+    let next = queue.get(current.next_pos?)?;
+    let artists: &[String] = if next.artists == current.artists {
+        &[]
+    } else {
+        &next.artists
+    };
+    Some(format_track(next.title.as_deref(), &next.url, artists))
+}
+
+fn next_label(next_track: Option<String>) -> String {
+    match next_track {
+        Some(text) => format!("Next: {text}"),
+        None => "Next".to_string(),
+    }
+}
+
 /// Pure: assembles a `MenuModel` from already-extracted primitives. All the
 /// album-nav and playlist rules live here; `render` makes no further decisions.
+///
+/// `max_chars` (`config.toml`'s `menu_text_max_chars`) is applied to each
+/// finished label, not to its parts, so every row — track, next, album,
+/// album-nav — is cut at the same visible width. Cutting the tail never
+/// reaches a fixed prefix like `Next Album: ` at any sensible limit.
 pub fn model(
     state: PlayState,
     random: bool,
@@ -530,11 +563,28 @@ pub fn model(
     current: Option<CurrentTrack<'_>>,
     playlists_for_url: &[String],
     key_playlists: &[String],
+    max_chars: usize,
 ) -> MenuModel {
-    let track = current.as_ref().map(track_copy_row);
+    let cut = |label: String| truncate(&label, max_chars);
+    let cut_row = |row: CopyRow| CopyRow {
+        label: cut(row.label),
+        ..row
+    };
+    let cut_jump = |jump: AlbumJump| AlbumJump {
+        label: cut(jump.label),
+        ..jump
+    };
+
+    let track = current.as_ref().map(track_copy_row).map(cut_row);
+    let next_label = cut(next_label(
+        current
+            .as_ref()
+            .and_then(|current| next_track_text(queue, current)),
+    ));
     let album_title = current
         .as_ref()
-        .and_then(|current| album_copy_row(queue, current));
+        .and_then(|current| album_copy_row(queue, current))
+        .map(cut_row);
     let (prev_album, next_album) = album_nav(
         state,
         random,
@@ -544,9 +594,10 @@ pub fn model(
 
     MenuModel {
         track,
+        next_label,
         album_title,
-        prev_album,
-        next_album,
+        prev_album: prev_album.map(cut_jump),
+        next_album: next_album.map(cut_jump),
         in_playlists: in_playlists_list(playlists_for_url),
         add_to: add_to_list(playlists_for_url, key_playlists),
         // The caller (`main.rs`) carries the previous model's `album_section`
@@ -709,7 +760,7 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
     ))?;
     menu.append(&MenuItem::with_id(
         NEXT_ID,
-        format!("{NEXT_ICON} Next"),
+        format!("{NEXT_ICON} {}", model.next_label),
         true,
         None,
     ))?;
@@ -931,10 +982,112 @@ mod tests {
         assert_eq!(compact_title(PlayState::Stopped), STOPPED_ICON);
     }
 
+    fn titled_entry(title: &str, artist: &str) -> QueueEntry {
+        QueueEntry {
+            title: Some(title.to_string()),
+            artists: vec![artist.to_string()],
+            ..entry("A/Al/x.mp3")
+        }
+    }
+
+    fn current_at(pos: usize, next_pos: Option<usize>, artists: &[String]) -> CurrentTrack<'_> {
+        CurrentTrack {
+            pos,
+            next_pos,
+            url: "A/Al/x.mp3",
+            title: Some("Current"),
+            artists,
+        }
+    }
+
+    #[test]
+    fn next_track_text_drops_the_artist_when_unchanged() {
+        let queue = vec![
+            titled_entry("Top of the Hill", "Tom Waits"),
+            titled_entry("Hoist That Rag", "Tom Waits"),
+        ];
+        let artists = vec!["Tom Waits".to_string()];
+        assert_eq!(
+            next_track_text(&queue, &current_at(0, Some(1), &artists)).as_deref(),
+            Some("Hoist That Rag")
+        );
+    }
+
+    #[test]
+    fn next_track_text_shows_a_different_artist() {
+        let queue = vec![
+            titled_entry("Top of the Hill", "Tom Waits"),
+            titled_entry("Sins of My Father", "Someone Else Entirely"),
+        ];
+        let artists = vec!["Tom Waits".to_string()];
+        assert_eq!(
+            next_track_text(&queue, &current_at(0, Some(1), &artists)).as_deref(),
+            Some("Sins of My Father - Someone Else Entirely")
+        );
+    }
+
+    #[test]
+    fn model_cuts_every_dropdown_label_at_the_same_limit() {
+        let long = "x".repeat(100);
+        let queue: Vec<QueueEntry> = (0..10u64)
+            .map(|i| QueueEntry {
+                title: Some(long.clone()),
+                ..queue_entry(&format!("A/Al{}/{i}.mp3", i / 5), Some(&long), i)
+            })
+            .collect();
+        let model = model(
+            PlayState::Playing,
+            false,
+            &queue,
+            Some(CurrentTrack {
+                pos: 1,
+                next_pos: Some(2),
+                url: &queue[1].url,
+                title: Some(&long),
+                artists: &[],
+            }),
+            &[],
+            &[],
+            30,
+        );
+        let labels = [
+            model.track.unwrap().label,
+            model.next_label,
+            model.album_title.unwrap().label,
+            model.next_album.unwrap().label,
+        ];
+        for label in labels {
+            assert_eq!(label.chars().count(), 30, "{label}");
+            assert!(label.ends_with(ELLIPSIS), "{label}");
+        }
+    }
+
+    #[test]
+    fn next_label_is_plain_without_a_next_track() {
+        let queue = vec![titled_entry("Only", "Tom Waits")];
+        let artists = vec!["Tom Waits".to_string()];
+        // No `nextsong` (end of queue), or one that doesn't resolve.
+        assert_eq!(
+            next_track_text(&queue, &current_at(0, None, &artists)),
+            None
+        );
+        assert_eq!(
+            next_track_text(&queue, &current_at(0, Some(5), &artists)),
+            None
+        );
+        assert_eq!(next_label(None), "Next");
+        assert_eq!(
+            next_label(Some("Hoist That Rag".to_string())),
+            "Next: Hoist That Rag"
+        );
+    }
+
     fn entry(url: &str) -> QueueEntry {
         QueueEntry {
             url: url.to_string(),
             album: None,
+            title: None,
+            artists: Vec::new(),
             id: 0,
         }
     }
@@ -1005,6 +1158,8 @@ mod tests {
         QueueEntry {
             url: url.to_string(),
             album: album.map(str::to_string),
+            title: None,
+            artists: Vec::new(),
             id,
         }
     }
@@ -1165,12 +1320,14 @@ mod tests {
             &queue,
             Some(CurrentTrack {
                 pos: 2,
+                next_pos: None,
                 url: &queue[2].url,
                 title: Some("Track 3"),
                 artists: &[],
             }),
             &[],
             &[],
+            60,
         );
         assert!(model.prev_album.is_none());
         assert!(model.next_album.is_none());
@@ -1199,12 +1356,14 @@ mod tests {
             &queue,
             Some(CurrentTrack {
                 pos: 2,
+                next_pos: None,
                 url: &queue[2].url,
                 title: Some("Come Together"),
                 artists: &artists,
             }),
             &playlists_for_url,
             &key_playlists,
+            60,
         );
 
         let track = model.track.unwrap();
@@ -1240,6 +1399,7 @@ mod tests {
                 label: label.to_string(),
                 uri: add_uri("Al/1.mp3"),
             }),
+            next_label: next_label(None),
             album_title: None,
             prev_album,
             next_album: None,
@@ -1346,12 +1506,14 @@ mod tests {
             &queue,
             Some(CurrentTrack {
                 pos: 0,
+                next_pos: None,
                 url: &queue[0].url,
                 title: Some("Loose Track"),
                 artists: &[],
             }),
             &[],
             &[],
+            60,
         );
         assert!(model.album_title.is_none());
         assert!(model.track.is_some());
@@ -1366,6 +1528,7 @@ mod tests {
             &queue,
             &CurrentTrack {
                 pos: 0,
+                next_pos: None,
                 url: &queue[0].url,
                 title: None,
                 artists: &[],
