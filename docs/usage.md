@@ -1,26 +1,33 @@
 # Using it
 
-The menu bar shows the current track as `Title - Artist` (truncated — the
-dropdown's track row always shows it in full), `♫` when connected but
-nothing is playing, or `🔇` when MPD is unreachable — the app keeps retrying
-with backoff and recovers automatically, no restart needed. When playback is
-paused, the title is prefixed with `⏸ ` (outside the truncation budget, so the
-track text truncates the same whether playing or paused).
+By default the menu bar shows just the play state — `▶`, `⏸` or `⏹` — with
+the track itself as the first row of the dropdown. Set `full_title = true` in
+`config.toml` to show the current track as `Title - Artist` instead
+(truncated — the dropdown's track row always shows it in full), prefixed with
+`⏸ ` while paused (outside the truncation budget, so the track text truncates
+the same whether playing or paused). It's opt-in because on a MacBook with a
+notch, macOS silently hides menu-bar items that don't fit beside it — see
+[implementation-details.md](implementation-details.md). Either way, it's `♫`
+when connected but nothing is queued, or `🔇` when MPD is unreachable — the
+app keeps retrying with backoff and recovers automatically, no restart
+needed.
 
 Dropdown menu, top to bottom:
 
+- `⧉ <Title - Artist>` — the current track, in full. Clicking it copies an
+  `mpdcontrol://add "<path>"` URI for the track's file, same as the album row
+  below.
 - `⏯ Play/Pause`, `⏭ Next`, `⏹ Clear`
 - Album navigation (only while inside a same-directory run of 5+ tracks and
   `random` is off — see [implementation-details.md](implementation-details.md)):
   - `⏮⏮ Start of Album` on track 2+ of an album, or `⏮⏮ Prev Album: <name>` on
     track 1
   - `⏭⏭ Next Album: <name>`, omitted at the last album
-- `⧉ <Title - Artist>` and `⧉ <Album>` — the current track and its album, in
-  full. Clicking either copies an `mpdcontrol://add "<path>"` URI to the
-  clipboard, ready to paste into Obsidian or anywhere else that takes a link:
-  the track's own file for the first, its parent directory (the whole album,
-  since `add` is recursive) for the second. The album row is omitted for a
-  library-root file, which has no album directory.
+- `⧉ <Album>` — the current album, in full. Clicking it copies an
+  `mpdcontrol://add "<path>"` URI to the clipboard, ready to paste into
+  Obsidian or anywhere else that takes a link — the track's parent directory,
+  i.e. the whole album, since `add` is recursive. Omitted for a library-root
+  file, which has no album directory.
 - The current album's row from `albums.db` (see
   [album-database.md](album-database.md)) — a disabled summary line, e.g.
   `1996 · ★★★★☆ · ↻ · Soundtrack`, joining whichever of year / star rating /

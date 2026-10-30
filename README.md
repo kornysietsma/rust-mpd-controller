@@ -115,7 +115,8 @@ requires the installed bundle).
 
 Optional TOML file at `~/.config/mpd-controller/config.toml`. **Every
 connection setting is inferred from MPD's own `~/.mpd/mpd.conf`**, so in the
-normal case the only thing worth putting here is `key_playlists`:
+normal case the only things worth putting here are `key_playlists` and
+`full_title`:
 
 ```toml
 key_playlists = [         # default: empty — controls the "Add to" submenu, see below
@@ -123,6 +124,9 @@ key_playlists = [         # default: empty — controls the "Add to" submenu, se
   "My Top Rated",
   "Classical Meditation",
 ]
+full_title = true         # default: false — show "Title - Artist" in the menu bar,
+                          # not just ▶/⏸/⏹. Off by default because macOS hides
+                          # menu-bar items that don't fit beside a MacBook's notch
 ```
 
 The rest exist only to override that inference:

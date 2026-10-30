@@ -134,6 +134,9 @@ const ERROR_ICON: &str = "\u{26A0}\u{FE0E}";
 // Pinned to text presentation with U+FE0E, as the menu glyphs below
 // are, so it renders monochrome and narrow rather than as wide colour emoji.
 const PAUSED_ICON: &str = "\u{23F8}\u{FE0E}";
+// The compact title's other two states, pinned the same way.
+const PLAYING_ICON: &str = "\u{25B6}\u{FE0E}";
+const STOPPED_ICON: &str = "\u{23F9}\u{FE0E}";
 const TITLE_MAX_CHARS: usize = 25;
 const ELLIPSIS: char = '…';
 
@@ -188,6 +191,19 @@ pub fn track_title(state: PlayState, title: Option<&str>, url: &str, artists: &[
     }
 }
 
+/// The default menu-bar title: just a play-state glyph. Narrow on purpose —
+/// macOS silently hides status items that don't fit beside a MacBook's
+/// notch, and a track-length title is exactly the kind that doesn't. The
+/// track itself is the first row of the dropdown instead.
+pub fn compact_title(state: PlayState) -> String {
+    match state {
+        PlayState::Playing => PLAYING_ICON,
+        PlayState::Paused => PAUSED_ICON,
+        PlayState::Stopped => STOPPED_ICON,
+    }
+    .to_string()
+}
+
 pub fn empty_queue_title() -> String {
     EMPTY_QUEUE_ICON.to_string()
 }
@@ -200,8 +216,12 @@ pub fn error_title() -> String {
     ERROR_ICON.to_string()
 }
 
-pub fn title_for_snapshot(snapshot: &PlayerSnapshot) -> String {
+/// `full_title` is `config.toml`'s opt-in for `Title - Artist`; otherwise
+/// `compact_title`. Empty-queue, disconnected and error titles are single
+/// glyphs either way.
+pub fn title_for_snapshot(snapshot: &PlayerSnapshot, full_title: bool) -> String {
     match &snapshot.song {
+        Some(_) if !full_title => compact_title(snapshot.status.state),
         Some(song) => track_title(
             snapshot.status.state,
             song.title(),
@@ -473,16 +493,16 @@ impl MenuModel {
         self.prev_album.is_some() || self.next_album.is_some()
     }
 
-    /// Whether the current-track section (the track and album-title copy
-    /// rows, "In playlists", "Add to", and the album-database section) and
-    /// its preceding separator should be emitted. Same rule and same
+    /// Whether the current-track section (the album-title copy row, "In
+    /// playlists", "Add to", and the album-database section) and its
+    /// preceding separator should be emitted. The track's own copy row isn't
+    /// part of it: that sits above the controls, as the menu's header. Same rule and same
     /// reasoning as `show_album_nav_section`. A `notice`-only row (e.g. "album
     /// database unavailable") still needs the section to show even with
     /// nothing else in it, so `AlbumSection::is_empty` covers all three of
     /// its fields, not just `controls`.
     pub fn show_track_section(&self) -> bool {
-        self.track.is_some()
-            || self.album_title.is_some()
+        self.album_title.is_some()
             || !self.in_playlists.is_empty()
             || !self.add_to.is_empty()
             || !self.album_section.is_empty()
@@ -674,6 +694,13 @@ pub fn parse_flag_payload(payload: &str) -> Option<(AlbumFlag, bool)> {
 pub fn render(model: &MenuModel) -> Result<Menu> {
     let menu = Menu::new();
 
+    // First, so the menu still says what's playing when the tray title is
+    // just `compact_title`'s glyph.
+    if let Some(row) = &model.track {
+        menu.append(&copy_item(row))?;
+        menu.append(&PredefinedMenuItem::separator())?;
+    }
+
     menu.append(&MenuItem::with_id(
         PLAY_PAUSE_ID,
         format!("{PLAY_PAUSE_ICON} Play/Pause"),
@@ -715,16 +742,8 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
 
     if model.show_track_section() {
         menu.append(&PredefinedMenuItem::separator())?;
-        for row in [model.track.as_ref(), model.album_title.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            menu.append(&MenuItem::with_id(
-                copy_item_id(&row.uri),
-                format!("{COPY_ICON} {}", row.label),
-                true,
-                None,
-            ))?;
+        if let Some(row) = &model.album_title {
+            menu.append(&copy_item(row))?;
         }
         if let Some(summary) = &model.album_section.summary {
             menu.append(&MenuItem::new(summary, false, None))?;
@@ -786,6 +805,15 @@ pub fn render(model: &MenuModel) -> Result<Menu> {
     menu.append(&MenuItem::with_id(QUIT_ID, "Quit", true, None))?;
 
     Ok(menu)
+}
+
+fn copy_item(row: &CopyRow) -> MenuItem {
+    MenuItem::with_id(
+        copy_item_id(&row.uri),
+        format!("{COPY_ICON} {}", row.label),
+        true,
+        None,
+    )
 }
 
 /// The startup-error menu: just what broke and where to look, plus Quit.
@@ -894,6 +922,13 @@ mod tests {
             let paused = track_title(PlayState::Paused, Some(title), "foo.mp3", &[]);
             assert_eq!(paused, format!("{PAUSED_ICON} {playing}"));
         }
+    }
+
+    #[test]
+    fn compact_title_is_one_glyph_per_play_state() {
+        assert_eq!(compact_title(PlayState::Playing), PLAYING_ICON);
+        assert_eq!(compact_title(PlayState::Paused), PAUSED_ICON);
+        assert_eq!(compact_title(PlayState::Stopped), STOPPED_ICON);
     }
 
     fn entry(url: &str) -> QueueEntry {
@@ -1243,7 +1278,9 @@ mod tests {
 
     #[test]
     fn track_section_shows_when_any_of_its_parts_is_present() {
-        assert!(model_with(Some("Some Track"), None, vec![], vec![]).show_track_section());
+        // The track row alone doesn't count: it's rendered above the
+        // controls, not in this section.
+        assert!(!model_with(Some("Some Track"), None, vec![], vec![]).show_track_section());
         assert!(
             model_with(None, None, vec!["Five stars".to_string()], vec![]).show_track_section()
         );

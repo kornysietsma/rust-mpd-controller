@@ -14,7 +14,8 @@ const DB_FILENAME: &str = "albums.db";
 /// `~/.config/mpd-controller/config.toml`, as written by a person. Every
 /// connection field is optional: unset means "take it from MPD's own
 /// `mpd.conf`", which is almost always what's wanted. `key_playlists` has no
-/// equivalent there, so it only ever comes from this file.
+/// equivalent there, so it only ever comes from this file — and likewise
+/// `full_title`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FileConfig {
@@ -27,6 +28,10 @@ struct FileConfig {
     /// counterpart to `album-tool --db-path`.
     db_path: Option<PathBuf>,
     key_playlists: Vec<String>,
+    /// Show `Title - Artist` in the menu bar instead of just a play-state
+    /// glyph. Opt-in: on a notched MacBook screen a wide status item can be
+    /// silently hidden by macOS when the menu bar runs out of room.
+    full_title: bool,
 }
 
 /// The resolved settings the app actually runs on. `db_path` is guaranteed
@@ -40,6 +45,7 @@ pub struct Config {
     pub mpd_port: u16,
     pub db_path: PathBuf,
     pub key_playlists: Vec<String>,
+    pub full_title: bool,
 }
 
 /// Precedence-resolved settings before the database's presence has been
@@ -51,6 +57,7 @@ struct ResolvedConfig {
     mpd_port: u16,
     db_path: Option<PathBuf>,
     key_playlists: Vec<String>,
+    full_title: bool,
 }
 
 impl Default for ResolvedConfig {
@@ -60,6 +67,7 @@ impl Default for ResolvedConfig {
             mpd_port: DEFAULT_MPD_PORT,
             db_path: None,
             key_playlists: Vec::new(),
+            full_title: false,
         }
     }
 }
@@ -146,6 +154,7 @@ pub fn load() -> Result<Config, ConfigError> {
         mpd_port: resolved.mpd_port,
         db_path,
         key_playlists: resolved.key_playlists,
+        full_title: resolved.full_title,
     })
 }
 
@@ -187,6 +196,7 @@ fn resolve(file: FileConfig, conf: Option<&MpdConf>) -> ResolvedConfig {
                 .map(|dir| dir.join(DB_FILENAME))
         }),
         key_playlists: file.key_playlists,
+        full_title: file.full_title,
     }
 }
 
@@ -249,6 +259,7 @@ mod tests {
                 mpd_conf = "/etc/mpd.conf"
                 db_path = "/elsewhere/albums.db"
                 key_playlists = ["Five stars", "My Top Rated"]
+                full_title = true
             "#,
         );
 
@@ -263,6 +274,7 @@ mod tests {
                 mpd_conf: Some(PathBuf::from("/etc/mpd.conf")),
                 db_path: Some(PathBuf::from("/elsewhere/albums.db")),
                 key_playlists: vec!["Five stars".to_string(), "My Top Rated".to_string()],
+                full_title: true,
             }
         );
     }

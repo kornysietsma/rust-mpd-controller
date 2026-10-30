@@ -187,6 +187,7 @@ fn main() -> Result<()> {
     // `db_path` is handed to the album worker, which is a separate thread
     // from `mpd::run`'s tokio task.
     let key_playlists = config.key_playlists.clone();
+    let full_title = config.full_title;
     let db_path = config.db_path.clone();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -355,7 +356,7 @@ fn main() -> Result<()> {
                         play_state = snapshot.status.state;
                         current_client = Some(client);
                         current_url = snapshot.song.as_ref().map(|song| song.url.clone());
-                        let title = menu::title_for_snapshot(&snapshot);
+                        let title = menu::title_for_snapshot(&snapshot, full_title);
 
                         let entries = queue_entries(&snapshot.queue);
                         // Only a position that actually resolves to a queue

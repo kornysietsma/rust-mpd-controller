@@ -289,11 +289,37 @@ prefix is never pushed off.
 
 ## Two different icons, don't conflate them
 
-- The **tray title is text-only** (`TrayIconBuilder::with_title`) — the track
-  text, `♫`, or `🔇`. There is no tray icon image asset.
+- The **tray title is text-only** (`TrayIconBuilder::with_title`) — a
+  play-state glyph or (with `full_title`) the track text, `♫`, or `🔇`. There
+  is no tray icon image asset.
 - **`assets/icon.icns`** is the *app bundle* icon, used by Finder/Dock. It's
   currently a generated placeholder; swapping the file is all that's needed to
   change it, no config edits.
+
+## Why the track title is opt-in: the notch
+
+On a MacBook with a notch, status items can only sit to the right of it, and
+when they don't all fit macOS **silently hides** some — no API callback, no
+log line. It also lays out each display's menu bar separately, so the same
+item can be visible on an external monitor and missing on the built-in
+screen.
+
+Seen on an M3 MacBook with two external monitors and a crowded menu bar: the
+full title vanished from the laptop screen only, and *which tracks* it
+vanished on looked random — "Top of the Hill - Tom Wa…" hidden, "Hoist That
+Rag - Tom Wai…" shown. Both are truncated to the same 25 chars, but the menu
+bar font is proportional, so their pixel widths differ, and the bar was right
+at the threshold. Confirmed it's width: pausing the hidden track (adding the
+`⏸ ` prefix) made it reappear and pushed a *different* item (Slack) off
+instead — macOS doesn't just drop the leftmost item.
+
+Neither real fix is available: an app has one `NSStatusItem`, which macOS
+mirrors to every display, so there's no showing different text on different
+screens; and there's no public API for "how much room is left" or "am I
+hidden right now" (`NSScreen.safeAreaInsets` reveals the notch, but not the
+other apps' items or the frontmost app's menus). Hence a narrow glyph by
+default, with the track moved to the top of the dropdown, and the full title
+as an explicit opt-in.
 
 ## Verification performed
 
